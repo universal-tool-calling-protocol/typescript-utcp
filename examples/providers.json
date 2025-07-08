@@ -1,0 +1,14 @@
+[
+  {
+    "name": "httpbin_provider",
+    "provider_type": "http",
+    "url": "https://httpbin.org",
+    "http_method": "GET"
+  },
+  {
+    "name": "echo_cli_provider",
+    "provider_type": "cli",
+    "command": "echo",
+    "args": ["Hello from CLI provider"]
+  }
+]
