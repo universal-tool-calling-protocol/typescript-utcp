@@ -1,0 +1,9 @@
+{
+  "name": "single_tool",
+  "description": "a single tool",
+  "provider": {
+    "provider_type": "text",
+    "name": "test-text-provider",
+    "file_path": "./single-tool.test.json"
+  }
+}

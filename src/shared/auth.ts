@@ -1,45 +1,49 @@
 import { z } from 'zod';
 
-// Base auth schema
-export const AuthSchema = z.object({
-  auth_type: z.enum(['api_key', 'basic', 'oauth2']),
-});
-
-// API Key Authentication
-export const ApiKeyAuthSchema = AuthSchema.extend({
+/**
+ * Authentication using an API key.
+ * 
+ * The key can be provided directly or sourced from an environment variable.
+ */
+export const ApiKeyAuthSchema = z.object({
   auth_type: z.literal('api_key'),
-  api_key: z.string(),
-  header_name: z.string().default('Authorization'),
-  header_value_prefix: z.string().default('Bearer '),
+  api_key: z.string().describe('The API key for authentication.'),
+  var_name: z.string().describe('The name of the variable containing the API key.'),
 });
 
-// Basic Authentication
-export const BasicAuthSchema = AuthSchema.extend({
+export type ApiKeyAuth = z.infer<typeof ApiKeyAuthSchema>;
+
+/**
+ * Authentication using a username and password.
+ */
+export const BasicAuthSchema = z.object({
   auth_type: z.literal('basic'),
-  username: z.string(),
-  password: z.string(),
+  username: z.string().describe('The username for basic authentication.'),
+  password: z.string().describe('The password for basic authentication.'),
 });
 
-// OAuth2 Authentication
-export const OAuth2AuthSchema = AuthSchema.extend({
+export type BasicAuth = z.infer<typeof BasicAuthSchema>;
+
+/**
+ * Authentication using OAuth2.
+ */
+export const OAuth2AuthSchema = z.object({
   auth_type: z.literal('oauth2'),
-  client_id: z.string(),
-  client_secret: z.string(),
-  token_url: z.string(),
-  scope: z.string().optional(),
-  grant_type: z.string().default('client_credentials'),
+  token_url: z.string().describe('The URL to fetch the OAuth2 token from.'),
+  client_id: z.string().describe('The OAuth2 client ID.'),
+  client_secret: z.string().describe('The OAuth2 client secret.'),
+  scope: z.string().optional().describe('The OAuth2 scope.'),
 });
 
-// Union type for all auth types
-export const AuthUnionSchema = z.discriminatedUnion('auth_type', [
+export type OAuth2Auth = z.infer<typeof OAuth2AuthSchema>;
+
+/**
+ * Combined authentication types.
+ */
+export const AuthSchema = z.discriminatedUnion('auth_type', [
   ApiKeyAuthSchema,
   BasicAuthSchema,
   OAuth2AuthSchema,
 ]);
 
-// TypeScript types
 export type Auth = z.infer<typeof AuthSchema>;
-export type ApiKeyAuth = z.infer<typeof ApiKeyAuthSchema>;
-export type BasicAuth = z.infer<typeof BasicAuthSchema>;
-export type OAuth2Auth = z.infer<typeof OAuth2AuthSchema>;
-export type AuthUnion = z.infer<typeof AuthUnionSchema>;

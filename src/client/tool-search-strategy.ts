@@ -1,14 +1,15 @@
 import { Tool } from '../shared/tool';
 
 /**
- * Interface for tool search strategy implementations
+ * Defines the interface for a tool search strategy.
  */
 export interface ToolSearchStrategy {
   /**
-   * Search for tools based on the strategy
-   * @param tools Array of tools to search in
-   * @param query Search query
-   * @returns Array of matching tools
+   * Searches for tools relevant to the query.
+   *
+   * @param query The search query.
+   * @param limit The maximum number of tools to return. 0 for no limit.
+   * @returns A promise that resolves to a list of tools that match the search query.
    */
-  search(tools: Tool[], query: string): Tool[];
+  searchTools(query: string, limit?: number): Promise<Tool[]>;
 }

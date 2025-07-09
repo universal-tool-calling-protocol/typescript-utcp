@@ -1,56 +1,70 @@
+import { ProviderUnion } from '../shared/provider';
 import { Tool } from '../shared/tool';
 
 /**
- * Interface for tool repository implementations
+ * Defines the interface for a tool repository, which is responsible for storing,
+ * retrieving, and managing tools and their providers.
  */
 export interface ToolRepository {
   /**
-   * Add a tool to the repository
-   * @param tool The tool to add
+   * Saves a provider and its associated tools in the repository.
+   *
+   * @param provider The provider to save.
+   * @param tools The list of tools associated with the provider.
    */
-  addTool(tool: Tool): void;
+  saveProviderWithTools(provider: ProviderUnion, tools: Tool[]): Promise<void>;
 
   /**
-   * Remove a tool from the repository
-   * @param toolName The name of the tool to remove
+   * Removes a provider and all its associated tools from the repository.
+   *
+   * @param providerName The name of the provider to remove.
+   * @throws Will throw an error if the provider is not found.
    */
-  removeTool(toolName: string): void;
+  removeProvider(providerName: string): Promise<void>;
 
   /**
-   * Remove all tools from a specific provider
-   * @param providerName The name of the provider
+   * Removes a specific tool from the repository.
+   *
+   * @param toolName The name of the tool to remove.
+   * @throws Will throw an error if the tool is not found.
    */
-  removeToolsByProvider(providerName: string): void;
+  removeTool(toolName: string): Promise<void>;
 
   /**
-   * Get a tool by name
-   * @param toolName The name of the tool
-   * @returns The tool if found, undefined otherwise
+   * Retrieves a tool by its name.
+   *
+   * @param toolName The name of the tool to retrieve.
+   * @returns A promise that resolves to the tool if found, otherwise undefined.
    */
-  getTool(toolName: string): Tool | undefined;
+  getTool(toolName: string): Promise<Tool | undefined>;
 
   /**
-   * Get all tools in the repository
-   * @returns Array of all tools
+   * Retrieves all tools from the repository.
+   *
+   * @returns A promise that resolves to a list of all tools.
    */
-  getAllTools(): Tool[];
+  getTools(): Promise<Tool[]>;
 
   /**
-   * Search for tools by various criteria
-   * @param query Search query
-   * @returns Array of matching tools
+   * Retrieves all tools associated with a specific provider.
+   *
+   * @param providerName The name of the provider.
+   * @returns A promise that resolves to a list of tools for the provider, or undefined if the provider is not found.
    */
-  searchTools(query: string): Tool[];
+  getToolsByProvider(providerName: string): Promise<Tool[] | undefined>;
 
   /**
-   * Get tools by tag
-   * @param tag The tag to search for
-   * @returns Array of tools with the specified tag
+   * Retrieves a provider by its name.
+   *
+   * @param providerName The name of the provider to retrieve.
+   * @returns A promise that resolves to the provider if found, otherwise undefined.
    */
-  getToolsByTag(tag: string): Tool[];
+  getProvider(providerName: string): Promise<ProviderUnion | undefined>;
 
   /**
-   * Clear all tools from the repository
+   * Retrieves all providers from the repository.
+   *
+   * @returns A promise that resolves to a list of all providers.
    */
-  clear(): void;
+  getProviders(): Promise<ProviderUnion[]>;
 }

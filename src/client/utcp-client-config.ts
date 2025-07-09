@@ -1,51 +1,58 @@
 import { z } from 'zod';
 
-// Configuration schema for UTCP client
-export const UtcpClientConfigSchema = z.object({
-  providers_file_path: z.string().optional(),
-  providers: z.array(z.any()).optional(),
-  tool_repository_type: z.enum(['in_memory']).default('in_memory'),
-  search_strategy: z.enum(['tag']).default('tag'),
-  max_concurrent_calls: z.number().positive().default(10),
-  default_timeout: z.number().default(30000),
-  retry_attempts: z.number().default(3),
-  retry_delay: z.number().default(1000),
+/**
+ * Custom error for when a variable referenced in a provider configuration is not found.
+ */
+export class UtcpVariableNotFoundError extends Error {
+  public variableName: string;
+
+  constructor(variableName: string) {
+    super(
+      `Variable ${variableName} referenced in provider configuration not found. Please add it to the environment variables or to your UTCP configuration.`,
+    );
+    this.variableName = variableName;
+    this.name = 'UtcpVariableNotFoundError';
+  }
+}
+
+// Schema for the dotenv variable source
+const UtcpDotEnvSchema = z.object({
+  type: z.literal('dotenv'),
+  env_file_path: z.string(),
 });
 
+/**
+ * Represents a source for loading variables, like a .env file.
+ */
+export const UtcpVariablesConfigSchema = z.discriminatedUnion('type', [
+  UtcpDotEnvSchema,
+  // Future variable source types can be added here
+]);
+
+/**
+ * The main configuration schema for the UTCP client.
+ */
+export const UtcpClientConfigSchema = z.object({
+  /**
+   * A dictionary of variables that can be referenced in provider configurations.
+   */
+  variables: z.record(z.string()).optional().default({}),
+  /**
+   * The file path to a JSON or YAML file containing a list of providers.
+   */
+  providers_file_path: z.string().optional(),
+  /**
+   * A list of sources from which to load additional variables.
+   */
+  load_variables_from: z.array(UtcpVariablesConfigSchema).optional(),
+});
+
+/**
+ * TypeScript type for the UTCP client configuration.
+ */
 export type UtcpClientConfig = z.infer<typeof UtcpClientConfigSchema>;
 
-// Custom error for variable not found
-export class UtcpVariableNotFound extends Error {
-  constructor(variableName: string) {
-    super(`UTCP variable not found: ${variableName}`);
-    this.name = 'UtcpVariableNotFound';
-  }
-}
-
-// Utility function to resolve environment variables in config
-export function resolveConfigVariables(config: any): any {
-  if (typeof config === 'string') {
-    // Replace ${VAR_NAME} with environment variable value
-    return config.replace(/\$\{([^}]+)\}/g, (match, varName) => {
-      const value = process.env[varName];
-      if (value === undefined) {
-        throw new UtcpVariableNotFound(varName);
-      }
-      return value;
-    });
-  }
-  
-  if (Array.isArray(config)) {
-    return config.map(item => resolveConfigVariables(item));
-  }
-  
-  if (typeof config === 'object' && config !== null) {
-    const resolved: any = {};
-    for (const [key, value] of Object.entries(config)) {
-      resolved[key] = resolveConfigVariables(value);
-    }
-    return resolved;
-  }
-  
-  return config;
-}
+/**
+ * TypeScript type for a variable configuration source.
+ */
+export type UtcpVariablesConfig = z.infer<typeof UtcpVariablesConfigSchema>;

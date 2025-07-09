@@ -1,159 +1,260 @@
 import { z } from 'zod';
-import { AuthUnionSchema } from './auth';
+import { 
+  Auth, 
+  AuthSchema,
+  ApiKeyAuthSchema,
+  BasicAuthSchema,
+  OAuth2Auth, 
+  OAuth2AuthSchema 
+} from './auth';
 
-// Provider types
+/**
+ * Provider types supported by UTCP
+ */
 export const ProviderTypeSchema = z.enum([
-  'http',
-  'sse',
-  'http_stream',
-  'cli',
-  'websocket',
-  'grpc',
-  'graphql',
-  'tcp',
-  'udp',
-  'webrtc',
-  'mcp',
-  'text',
+  'http',        // RESTful HTTP/HTTPS API
+  'sse',         // Server-Sent Events
+  'http_stream', // HTTP Chunked Transfer Encoding
+  'cli',         // Command Line Interface
+  'websocket',   // WebSocket bidirectional connection
+  'grpc',        // gRPC (Google Remote Procedure Call)
+  'graphql',     // GraphQL query language
+  'tcp',         // Raw TCP socket
+  'udp',         // User Datagram Protocol
+  'webrtc',      // Web Real-Time Communication
+  'mcp',         // Model Context Protocol
+  'text',        // Text file provider
 ]);
 
-// Base provider schema
+export type ProviderType = z.infer<typeof ProviderTypeSchema>;
+
+/**
+ * Base Provider schema
+ */
 export const ProviderSchema = z.object({
   name: z.string(),
   provider_type: ProviderTypeSchema,
-  startup_command: z.array(z.string()).optional(),
+  startup_command: z.array(z.string()).optional(), // For launching the provider if needed
 });
 
-// HTTP Provider
+export type Provider = z.infer<typeof ProviderSchema>;
+
+/**
+ * HTTP Provider schema for RESTful HTTP/HTTPS API tools
+ */
 export const HttpProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('http'),
   http_method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('GET'),
   url: z.string(),
   content_type: z.string().default('application/json'),
-  auth: AuthUnionSchema.optional(),
+  auth: AuthSchema.optional(),
   headers: z.record(z.string()).optional(),
-  body_field: z.string().default('body'),
-  header_fields: z.array(z.string()).optional(),
+  body_field: z.string().optional().default('body').describe('The name of the single input field to be sent as the request body.'),
+  header_fields: z.array(z.string()).optional().describe('List of input fields to be sent as request headers.'),
 });
 
-// SSE Provider
+export type HttpProvider = z.infer<typeof HttpProviderSchema>;
+
+/**
+ * SSE Provider schema for Server-Sent Events tools
+ */
 export const SSEProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('sse'),
   url: z.string(),
   event_type: z.string().optional(),
   reconnect: z.boolean().default(true),
-  reconnect_interval: z.number().default(1000),
-  auth: AuthUnionSchema.optional(),
+  retry_timeout: z.number().default(30000), // Retry timeout in milliseconds if disconnected
+  auth: AuthSchema.optional(),
   headers: z.record(z.string()).optional(),
+  body_field: z.string().optional().describe('The name of the single input field to be sent as the request body.'),
+  header_fields: z.array(z.string()).optional().describe('List of input fields to be sent as request headers for the initial connection.'),
 });
 
-// Streamable HTTP Provider
+export type SSEProvider = z.infer<typeof SSEProviderSchema>;
+
+/**
+ * HTTP Streaming Provider schema for HTTP Chunked Transfer Encoding tools
+ */
 export const StreamableHttpProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('http_stream'),
   url: z.string(),
-  http_method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('POST'),
-  content_type: z.string().default('application/json'),
-  auth: AuthUnionSchema.optional(),
+  http_method: z.enum(['GET', 'POST']).default('GET'),
+  content_type: z.string().default('application/octet-stream'),
+  chunk_size: z.number().default(4096), // Size of chunks in bytes
+  timeout: z.number().default(60000), // Timeout in milliseconds
   headers: z.record(z.string()).optional(),
-  body_field: z.string().default('body'),
-  header_fields: z.array(z.string()).optional(),
+  auth: AuthSchema.optional(),
+  body_field: z.string().optional().describe('The name of the single input field to be sent as the request body.'),
+  header_fields: z.array(z.string()).optional().describe('List of input fields to be sent as request headers.'),
 });
 
-// CLI Provider
+export type StreamableHttpProvider = z.infer<typeof StreamableHttpProviderSchema>;
+
+/**
+ * CLI Provider schema for Command Line Interface tools
+ */
 export const CliProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('cli'),
-  command: z.string(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
-  cwd: z.string().optional(),
-  timeout: z.number().optional(),
+  command_name: z.string(),
+  env_vars: z.record(z.string()).optional().describe('Environment variables to set when executing the command'),
+  working_dir: z.string().optional().describe('Working directory for command execution'),
+  auth: z.null(),
 });
 
-// WebSocket Provider
+export type CliProvider = z.infer<typeof CliProviderSchema>;
+
+/**
+ * WebSocket Provider schema for WebSocket tools
+ */
 export const WebSocketProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('websocket'),
   url: z.string(),
-  subprotocols: z.array(z.string()).optional(),
-  auth: AuthUnionSchema.optional(),
+  protocol: z.string().optional(),
+  keep_alive: z.boolean().default(true),
+  auth: AuthSchema.optional(),
   headers: z.record(z.string()).optional(),
-  ping_interval: z.number().optional(),
-  pong_timeout: z.number().optional(),
+  header_fields: z.array(z.string()).optional().describe('List of input fields to be sent as request headers for the initial connection.'),
 });
 
-// gRPC Provider
+export type WebSocketProvider = z.infer<typeof WebSocketProviderSchema>;
+
+/**
+ * gRPC Provider schema for gRPC tools
+ */
 export const GRPCProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('grpc'),
   host: z.string(),
   port: z.number(),
-  service: z.string(),
-  method: z.string(),
-  proto_file: z.string().optional(),
-  package_name: z.string().optional(),
-  credentials: z.enum(['insecure', 'ssl']).default('insecure'),
-  auth: AuthUnionSchema.optional(),
+  service_name: z.string(),
+  method_name: z.string(),
+  use_ssl: z.boolean().default(false),
+  auth: AuthSchema.optional(),
 });
 
-// GraphQL Provider
+export type GRPCProvider = z.infer<typeof GRPCProviderSchema>;
+
+/**
+ * GraphQL Provider schema for GraphQL tools
+ */
 export const GraphQLProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('graphql'),
-  endpoint: z.string(),
-  query: z.string().optional(),
-  mutation: z.string().optional(),
-  subscription: z.string().optional(),
-  auth: AuthUnionSchema.optional(),
+  url: z.string(),
+  operation_type: z.enum(['query', 'mutation', 'subscription']).default('query'),
+  operation_name: z.string().optional(),
+  auth: AuthSchema.optional(),
   headers: z.record(z.string()).optional(),
+  header_fields: z.array(z.string()).optional().describe('List of input fields to be sent as request headers for the initial connection.'),
 });
 
-// TCP Provider
+export type GraphQLProvider = z.infer<typeof GraphQLProviderSchema>;
+
+/**
+ * TCP Provider schema for raw TCP socket tools
+ */
 export const TCPProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('tcp'),
   host: z.string(),
   port: z.number(),
-  encoding: z.string().default('utf8'),
-  delimiter: z.string().optional(),
-  timeout: z.number().optional(),
+  timeout: z.number().default(30000),
+  auth: z.null(),
 });
 
-// UDP Provider
+export type TCPProvider = z.infer<typeof TCPProviderSchema>;
+
+/**
+ * UDP Provider schema for UDP socket tools
+ */
 export const UDPProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('udp'),
   host: z.string(),
   port: z.number(),
-  encoding: z.string().default('utf8'),
-  timeout: z.number().optional(),
+  timeout: z.number().default(30000),
+  auth: z.null(),
 });
 
-// WebRTC Provider
+export type UDPProvider = z.infer<typeof UDPProviderSchema>;
+
+/**
+ * WebRTC Provider schema for Web Real-Time Communication tools
+ */
 export const WebRTCProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('webrtc'),
-  signaling_url: z.string(),
-  ice_servers: z.array(z.object({
-    urls: z.array(z.string()),
-    username: z.string().optional(),
-    credential: z.string().optional(),
-  })).optional(),
-  data_channel_label: z.string().default('utcp'),
+  signaling_server: z.string(),
+  peer_id: z.string(),
+  data_channel_name: z.string().default('tools'),
+  auth: z.null(),
 });
 
-// MCP Provider
+export type WebRTCProvider = z.infer<typeof WebRTCProviderSchema>;
+
+/**
+ * MCP Stdio Server schema for MCP servers connected via stdio
+ */
+export const McpStdioServerSchema = z.object({
+  transport: z.literal('stdio'),
+  command: z.string(),
+  args: z.array(z.string()).optional().default([]),
+  env: z.record(z.string()).optional().default({}),
+});
+
+export type McpStdioServer = z.infer<typeof McpStdioServerSchema>;
+
+
+
+/**
+ * MCP HTTP Server schema for MCP servers connected via streamable HTTP
+ */
+export const McpHttpServerSchema = z.object({
+  transport: z.literal('http'),
+  url: z.string(),
+});
+
+export type McpHttpServer = z.infer<typeof McpHttpServerSchema>;
+
+/**
+ * Combined MCP Server types
+ */
+export const McpServerSchema = z.discriminatedUnion('transport', [
+  McpStdioServerSchema,
+  McpHttpServerSchema,
+]);
+
+export type McpServer = z.infer<typeof McpServerSchema>;
+
+/**
+ * MCP Configuration schema
+ */
+export const McpConfigSchema = z.object({
+  mcpServers: z.record(McpServerSchema),
+});
+
+export type McpConfig = z.infer<typeof McpConfigSchema>;
+
+/**
+ * MCP Provider schema for Model Context Protocol tools
+ */
 export const MCPProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('mcp'),
-  transport: z.enum(['stdio', 'sse']),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
-  url: z.string().optional(),
+  config: McpConfigSchema,
+  auth: OAuth2AuthSchema.optional(),
 });
 
-// Text Provider
+export type MCPProvider = z.infer<typeof MCPProviderSchema>;
+
+/**
+ * Text Provider schema for text file-based tools
+ */
 export const TextProviderSchema = ProviderSchema.extend({
   provider_type: z.literal('text'),
-  file_path: z.string(),
-  encoding: z.string().default('utf8'),
-  watch: z.boolean().default(false),
+  file_path: z.string().describe('The path to the file containing the tool definitions.'),
+  auth: z.null().optional().default(null),
 });
 
-// Union type for all provider types
+export type TextProvider = z.infer<typeof TextProviderSchema>;
+
+/**
+ * Combined Provider schema using discriminated union based on provider_type
+ */
 export const ProviderUnionSchema = z.discriminatedUnion('provider_type', [
   HttpProviderSchema,
   SSEProviderSchema,
@@ -169,19 +270,4 @@ export const ProviderUnionSchema = z.discriminatedUnion('provider_type', [
   TextProviderSchema,
 ]);
 
-// TypeScript types
-export type ProviderType = z.infer<typeof ProviderTypeSchema>;
-export type Provider = z.infer<typeof ProviderSchema>;
-export type HttpProvider = z.infer<typeof HttpProviderSchema>;
-export type SSEProvider = z.infer<typeof SSEProviderSchema>;
-export type StreamableHttpProvider = z.infer<typeof StreamableHttpProviderSchema>;
-export type CliProvider = z.infer<typeof CliProviderSchema>;
-export type WebSocketProvider = z.infer<typeof WebSocketProviderSchema>;
-export type GRPCProvider = z.infer<typeof GRPCProviderSchema>;
-export type GraphQLProvider = z.infer<typeof GraphQLProviderSchema>;
-export type TCPProvider = z.infer<typeof TCPProviderSchema>;
-export type UDPProvider = z.infer<typeof UDPProviderSchema>;
-export type WebRTCProvider = z.infer<typeof WebRTCProviderSchema>;
-export type MCPProvider = z.infer<typeof MCPProviderSchema>;
-export type TextProvider = z.infer<typeof TextProviderSchema>;
 export type ProviderUnion = z.infer<typeof ProviderUnionSchema>;
