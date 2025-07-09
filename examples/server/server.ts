@@ -1,7 +1,7 @@
 import express from 'express';
-import { HttpProvider } from '../src/shared/provider';
-import { Tool } from '../src/shared/tool';
-import { UtcpManual } from '../src/shared/utcp-manual';
+import { HttpProvider } from '../../src/shared/provider';
+import { Tool } from '../../src/shared/tool';
+import { UtcpManual } from '../../src/shared/utcp-manual';
 
 const app = express();
 app.use(express.json());
@@ -60,5 +60,5 @@ app.post('/test', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`UTCP example server running at ${BASE_PATH}`);
+  console.log(`UTCP example server running at :${PORT}`);
 });
