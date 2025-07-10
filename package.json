@@ -1,5 +1,5 @@
 {
-  "name": "utcp",
+  "name": "utcp-client",
   "version": "0.1.0",
   "description": "Universal Tool Calling Protocol (UTCP) client library for TypeScript",
   "main": "dist/index.js",
@@ -39,7 +39,6 @@
     "axios": "^1.6.0",
     "dotenv": "^17.1.0",
     "eventsource": "^2.0.2",
-    "express": "^5.1.0",
     "graphql": "^16.8.1",
     "graphql-request": "^6.1.0",
     "js-yaml": "^4.1.0",

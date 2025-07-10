@@ -1,4 +1,4 @@
-import { UtcpClient } from '../../../src/client/utcp-client';
+import { UtcpClient } from '../../src/client/utcp-client';
 
 async function main() {
   console.log('Initializing UTCP client...');
