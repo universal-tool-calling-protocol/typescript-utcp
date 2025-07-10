@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { Tool, ToolSchema } from './tool';
 
 // Package version from package.json
-const PACKAGE_VERSION = '0.1.0';
+const PACKAGE_VERSION = '0.1.1';
 
 /**
  * The response returned by a tool provider when queried for available tools 
