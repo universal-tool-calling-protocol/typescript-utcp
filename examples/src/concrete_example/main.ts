@@ -54,6 +54,7 @@ async function main() {
   };
 
   try {
+    // #########################################################################################
     // Step 1: Search job platform (Theirstack)
     console.log('Searching Job TheirStack...');
     const theirstackResp = await client.call_tool('theirstack.job_search_post', {
@@ -81,36 +82,6 @@ async function main() {
       console.log(`- ${job.job_title} at ${job.company} (${job.country}, Remote: ${job.remote})`);
     }
     // #########################################################################################
-
-    // Step 3: Draft personalized cover letters
-    // const applications: ApplicationRecord[] = [];
-
-    // for (const job of relevantJobs) {
-    //   console.log(`Drafting cover letter for job ${job.id} at ${job.company}...`);
-    //   const coverLetter = await client.call_tool("coverlettergenerator", {
-    //     job,
-    //     candidateProfile,
-    //     apiKey: process.env.COVERLETTERGENERATOR_API_KEY,
-    //   });
-    //   applications.push({
-    //     jobId: job.id,
-    //     company: job.company,
-    //     status: 'applied',
-    //     coverLetter: coverLetter as string,
-    //   });
-    // }
-
-    // Step 4: Track application status
-    // for (const application of applications) {
-    //   console.log(`Tracking application status for job ${application.jobId} at ${application.company}...`);
-    //   const status = await client.call_tool('applicationtracker', {
-    //     jobId: application.jobId,
-    //     company: application.company,
-    //     apiKey: process.env.APPLICATIONTRACKER_API_KEY,
-    //   });
-    //   application.status = status as ApplicationStatus;
-    //   console.log(`Application status: ${application.status}`);
-    // }
   } catch (error) {
     console.error('Error in job search workflow:', error);
   }
