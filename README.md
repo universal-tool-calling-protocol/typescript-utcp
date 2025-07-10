@@ -1,5 +1,7 @@
 # Universal Tool Calling Protocol (UTCP) for TypeScript
 
+[![NPM version](https://img.shields.io/npm/v/@utcp/sdk.svg)](https://www.npmjs.com/package/@utcp/sdk)
+
 ## Introduction
 
 The Universal Tool Calling Protocol (UTCP) is a modern, flexible, and scalable standard for defining and interacting with tools across a wide variety of communication protocols. This library is the official TypeScript implementation, designed to be easy to use, interoperable, and extensible.
