@@ -42,6 +42,9 @@
     "express": "^5.1.0",
     "graphql": "^16.8.1",
     "graphql-request": "^6.1.0",
+    "js-yaml": "^4.1.0",
+    "openai": "^5.8.3",
+    "tozod": "^3.0.0",
     "ws": "^8.14.2",
     "zod": "^3.22.4",
     "zod-to-json-schema": "^3.24.6"
@@ -51,6 +54,7 @@
     "@types/eventsource": "^1.1.12",
     "@types/express": "^5.0.3",
     "@types/jest": "^29.5.14",
+    "@types/js-yaml": "^4.0.9",
     "@types/nock": "^10.0.3",
     "@types/node": "^20.8.0",
     "@types/ws": "^8.5.6",

@@ -4,7 +4,7 @@
     {
       "name": "tool1",
       "description": "desc1",
-      "provider": {
+      "tool_provider": {
         "provider_type": "text",
         "name": "test-text-provider",
         "file_path": "./manual.test.json"

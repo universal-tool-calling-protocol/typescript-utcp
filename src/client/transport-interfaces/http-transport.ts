@@ -1,8 +1,9 @@
-import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosRequestConfig, Method } from 'axios';
+import * as yaml from 'js-yaml';
 import { ClientTransportInterface } from '../client-transport-interface';
 import { Tool } from '../../shared/tool';
 import { ProviderUnion, HttpProvider } from '../../shared/provider';
-import { UtcpManual } from '../../shared/utcp-manual';
+import { UtcpManual, UtcpManualSchema } from '../../shared/utcp-manual';
 import { OpenApiConverter } from '../openapi-converter';
 import { ApiKeyAuth, BasicAuth, OAuth2Auth } from '../../shared/auth';
 
@@ -31,16 +32,17 @@ export class HttpClientTransport implements ClientTransportInterface {
 
   /**
    * Discover tools from a REST API provider
-   * @param provider Details of the REST provider
+   * @param manual_provider Details of the REST provider
    * @returns List of tool declarations, or empty array if discovery fails
    */
-  async register_tool_provider(provider: ProviderUnion): Promise<Tool[]> {
-    if (provider.provider_type !== 'http') {
+  async register_tool_provider(manual_provider: ProviderUnion): Promise<Tool[]> {
+    if (manual_provider.provider_type !== 'http') {
       throw new Error("HttpTransport can only be used with HttpProvider");
     }
+    const httpProvider = manual_provider as HttpProvider;
 
     try {
-      const url = provider.url;
+      const url = httpProvider.url;
       
       // Security check: Enforce HTTPS or localhost to prevent MITM attacks
       if (!url.startsWith('https://') && !url.startsWith('http://localhost') && !url.startsWith('http://127.0.0.1')) {
@@ -50,49 +52,120 @@ export class HttpClientTransport implements ClientTransportInterface {
         );
       }
       
-      this._logger(`Discovering tools from '${provider.name}' (REST) at ${url}`);
+      this._logger(`Discovering tools from '${httpProvider.name}' (REST) at ${url}`);
       
+      const requestHeaders: Record<string, string> = httpProvider.headers ? { ...httpProvider.headers } : {};
+      let bodyContent: any = null; // For discovery, we typically don't have body content, but support it if needed
+      const queryParams: Record<string, any> = {};
+      const cookies: Record<string, string> = {};
+      let axiosAuthConfig: AxiosRequestConfig = {};
+
+      // Handle authentication
+      if (httpProvider.auth) {
+        if (httpProvider.auth.auth_type === 'api_key') {
+          const apiKeyAuth = httpProvider.auth as ApiKeyAuth;
+          if (apiKeyAuth.api_key) {
+            if (apiKeyAuth.location === 'header') {
+              requestHeaders[apiKeyAuth.var_name] = apiKeyAuth.api_key;
+            } else if (apiKeyAuth.location === 'query') {
+              queryParams[apiKeyAuth.var_name] = apiKeyAuth.api_key;
+            } else if (apiKeyAuth.location === 'cookie') {
+              cookies[apiKeyAuth.var_name] = apiKeyAuth.api_key;
+            }
+          } else {
+            this._logger("API key not found for ApiKeyAuth.", true);
+            throw new Error("API key for ApiKeyAuth not found.");
+          }
+        } else if (httpProvider.auth.auth_type === 'basic') {
+          const basicAuth = httpProvider.auth as BasicAuth;
+          axiosAuthConfig.auth = {
+            username: basicAuth.username,
+            password: basicAuth.password
+          };
+        } else if (httpProvider.auth.auth_type === 'oauth2') {
+          const token = await this._handleOAuth2(httpProvider.auth as OAuth2Auth);
+          requestHeaders["Authorization"] = `Bearer ${token}`;
+        }
+      }
+
+      // Handle body content if specified
+      if (httpProvider.body_field) {
+        // For discovery, body content is not typically sent, but we support the structure
+        bodyContent = null;
+      }
+
       try {
-        const response = await axios.get(url, { 
-          timeout: 10000 // 10 second timeout
+        // Set content-type header if body is provided and header not already set
+        if (bodyContent !== null && !('Content-Type' in requestHeaders)) {
+          requestHeaders["Content-Type"] = httpProvider.content_type;
+        }
+
+        const requestConfig: AxiosRequestConfig = {
+          ...axiosAuthConfig,
+          headers: requestHeaders,
+          params: queryParams,
+          timeout: 10000, // 10 second timeout
+          data: bodyContent
+        };
+
+        // Add cookies if any
+        if (Object.keys(cookies).length > 0) {
+          const cookieStrings = Object.entries(cookies).map(([key, value]) => `${key}=${value}`);
+          requestConfig.headers = requestConfig.headers || {};
+          requestConfig.headers['Cookie'] = cookieStrings.join('; ');
+        }
+
+        const method = httpProvider.http_method.toLowerCase() as Method;
+
+        const response = await axios.request({
+          method,
+          url,
+          ...requestConfig
         });
         
-        const responseData = response.data;
-        this._logger(`Received data from ${url}: ${JSON.stringify(responseData, null, 2)}`);
+        // Parse response based on content type
+        const contentType = response.headers['content-type'] || '';
+        let responseData: any;
+
+        if (contentType.includes('yaml') || url.endsWith('.yaml') || url.endsWith('.yml')) {
+          responseData = yaml.load(response.data);
+        } else {
+          responseData = response.data;
+        }
 
         // Check if the response is a UTCP manual or an OpenAPI spec
         if (responseData && responseData.version && Array.isArray(responseData.tools)) {
-          this._logger(`Detected UTCP manual from '${provider.name}'. Processing tools...`);
-          const utcpManual = responseData as UtcpManual;
-          this._logger(`Found ${utcpManual.tools.length} tools in manual.`);
-          // The tools in the manual should already have their own provider info.
+          this._logger(`Detected UTCP manual from '${httpProvider.name}'.`);
+          const utcpManual = UtcpManualSchema.parse(responseData);
           return utcpManual.tools;
         } else {
-          this._logger(`Data from '${provider.name}' is not a valid UTCP manual. Assuming OpenAPI spec...`);
-          const converter = new OpenApiConverter(responseData);
+          this._logger(`Assuming OpenAPI spec from '${httpProvider.name}'. Converting to UTCP manual.`);
+          const converter = new OpenApiConverter(responseData, { 
+            specUrl: httpProvider.url,
+            providerName: httpProvider.name
+          });
           const utcpManual = converter.convert();
-          this._logger(`Found ${utcpManual.tools.length} tools after OpenAPI conversion.`);
           return utcpManual.tools;
         }
       } catch (error) {
         if (axios.isAxiosError(error)) {
-          this._logger(`Error connecting to REST provider '${provider.name}': ${error.message}`, true);
+          this._logger(`Error connecting to REST provider '${httpProvider.name}': ${error.message}`, true);
         } else {
-          this._logger(`Error parsing JSON from REST provider '${provider.name}': ${String(error)}`, true);
+          this._logger(`Error parsing JSON from REST provider '${httpProvider.name}': ${String(error)}`, true);
         }
         return [];
       }
     } catch (error) {
-      this._logger(`Unexpected error discovering tools from REST provider '${provider.name}': ${String(error)}`, true);
+      this._logger(`Unexpected error discovering tools from REST provider '${httpProvider.name}': ${String(error)}`, true);
       return [];
     }
   }
 
   /**
    * Deregistering a tool provider is a no-op for the stateless HTTP transport
-   * @param provider The provider to deregister
+   * @param manual_provider The provider to deregister
    */
-  async deregister_tool_provider(provider: ProviderUnion): Promise<void> {
+  async deregister_tool_provider(manual_provider: ProviderUnion): Promise<void> {
     // No-op for stateless HTTP transport
   }
 
@@ -100,19 +173,19 @@ export class HttpClientTransport implements ClientTransportInterface {
    * Calls a tool on an HTTP provider
    * @param tool_name The name of the tool to call
    * @param args Arguments to pass to the tool
-   * @param provider The provider to use
+   * @param tool_provider The provider to use
    * @returns The result of the tool call
    */
-  async call_tool(tool_name: string, args: Record<string, any>, provider: ProviderUnion): Promise<any> {
-    if (provider.provider_type !== 'http') {
+  async call_tool(tool_name: string, args: Record<string, any>, tool_provider: ProviderUnion): Promise<any> {
+    if (tool_provider.provider_type !== 'http') {
       throw new Error("HttpClientTransport can only be used with HttpProvider");
     }
+    const httpProvider = tool_provider as HttpProvider;
 
-    const httpProvider = provider as HttpProvider;
-    const requestHeaders: Record<string, string> = { ...httpProvider.headers };
+    const requestHeaders: Record<string, string> = httpProvider.headers ? { ...httpProvider.headers } : {};
     let bodyContent: any = null;
-
     const remainingArgs = { ...args };
+    const cookies: Record<string, string> = {};
 
     // Handle header fields
     if (httpProvider.header_fields) {
@@ -130,6 +203,9 @@ export class HttpClientTransport implements ClientTransportInterface {
       delete remainingArgs[httpProvider.body_field];
     }
 
+    // Build the URL with path parameters substituted
+    const url = this._buildUrlWithPathParams(httpProvider.url, remainingArgs);
+    
     // The rest of the arguments are query parameters
     const queryParams = remainingArgs;
 
@@ -137,8 +213,15 @@ export class HttpClientTransport implements ClientTransportInterface {
     let axiosAuthConfig: AxiosRequestConfig = {};
     if (httpProvider.auth) {
       if (httpProvider.auth.auth_type === 'api_key') {
-        if (httpProvider.auth.api_key) {
-          requestHeaders[httpProvider.auth.var_name] = httpProvider.auth.api_key;
+        const apiKeyAuth = httpProvider.auth as ApiKeyAuth;
+        if (apiKeyAuth.api_key) {
+          if (apiKeyAuth.location === 'header') {
+            requestHeaders[apiKeyAuth.var_name] = apiKeyAuth.api_key;
+          } else if (apiKeyAuth.location === 'query') {
+            queryParams[apiKeyAuth.var_name] = apiKeyAuth.api_key;
+          } else if (apiKeyAuth.location === 'cookie') {
+            cookies[apiKeyAuth.var_name] = apiKeyAuth.api_key;
+          }
         } else {
           this._logger("API key not found for ApiKeyAuth.", true);
           throw new Error("API key for ApiKeyAuth not found.");
@@ -161,32 +244,36 @@ export class HttpClientTransport implements ClientTransportInterface {
         requestHeaders["Content-Type"] = httpProvider.content_type;
       }
 
-      // Prepare request config based on content type
+      // Prepare request config
       const requestConfig: AxiosRequestConfig = {
         ...axiosAuthConfig,
         headers: requestHeaders,
         params: queryParams,
+        data: bodyContent,
         timeout: 30000 // 30 second timeout
       };
 
-      // Make the request with the appropriate HTTP method
-      const method = httpProvider.http_method.toLowerCase();
-      let response: AxiosResponse;
-
-      if (['post', 'put', 'patch'].includes(method)) {
-        // For methods that support body content
-        const requestFn = axios[method as 'post' | 'put' | 'patch'];
-        response = await requestFn(httpProvider.url, bodyContent, requestConfig);
-      } else {
-        // For methods without body content (GET, DELETE)
-        const requestFn = axios[method as 'get' | 'delete'];
-        response = await requestFn(httpProvider.url, requestConfig);
+      // Add cookies if any
+      if (Object.keys(cookies).length > 0) {
+        const cookieStrings = Object.entries(cookies).map(([key, value]) => `${key}=${value}`);
+        requestConfig.headers = requestConfig.headers || {};
+        requestConfig.headers['Cookie'] = cookieStrings.join('; ');
       }
 
+      // Make the request with the appropriate HTTP method
+      const method = httpProvider.http_method.toLowerCase() as Method;
+      
+      const response = await axios.request({ ...requestConfig, url, method });
+
+      // Parse response based on content type
+      const contentType = response.headers['content-type'] || '';
+      if (contentType.includes('yaml') || url.endsWith('.yaml') || url.endsWith('.yml')) {
+        return yaml.load(response.data);
+      }
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        this._logger(`Error calling tool '${tool_name}' on provider '${provider.name}': ${error.message}`, true);
+        this._logger(`Error calling tool '${tool_name}' on provider '${tool_provider.name}': ${error.message}`, true);
       } else {
         this._logger(`Unexpected error calling tool '${tool_name}': ${String(error)}`, true);
       }
@@ -261,5 +348,27 @@ export class HttpClientTransport implements ClientTransportInterface {
       this._logger(`OAuth2 with Basic Auth header also failed: ${String(error)}`, true);
       throw error;
     }
+  }
+
+  private _buildUrlWithPathParams(urlTemplate: string, args: Record<string, any>): string {
+    let url = urlTemplate;
+    const pathParams = urlTemplate.match(/\{([^}]+)\}/g) || [];
+
+    for (const param of pathParams) {
+      const paramName = param.slice(1, -1);
+      if (paramName in args) {
+        url = url.replace(param, String(args[paramName]));
+        delete args[paramName];
+      } else {
+        throw new Error(`Missing required path parameter: ${paramName}`);
+      }
+    }
+
+    const remainingParams = url.match(/\{([^}]+)\}/g);
+    if (remainingParams) {
+      throw new Error(`Missing required path parameters: ${remainingParams.join(', ')}`);
+    }
+
+    return url;
   }
 }

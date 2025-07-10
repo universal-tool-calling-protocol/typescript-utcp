@@ -8,7 +8,8 @@ import { z } from 'zod';
 export const ApiKeyAuthSchema = z.object({
   auth_type: z.literal('api_key'),
   api_key: z.string().describe('The API key for authentication.'),
-  var_name: z.string().describe('The name of the variable containing the API key.'),
+  var_name: z.string().describe('The name of the header, query parameter, cookie or other container for the API key.'),
+  location: z.enum(['header', 'query', 'cookie']).default('header').describe('Where to include the API key (header, query parameter, or cookie).'),
 });
 
 export type ApiKeyAuth = z.infer<typeof ApiKeyAuthSchema>;

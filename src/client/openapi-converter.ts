@@ -1,19 +1,42 @@
 import { Tool, ToolInputOutputSchema } from '../shared/tool';
-import { UtcpManual } from '../shared/utcp-manual';
-import { HttpProvider } from '../shared/provider';
+import { UtcpManual, UtcpManualSchema } from '../shared/utcp-manual';
+import { HttpProvider, HttpProviderSchema } from '../shared/provider';
+import { Auth, ApiKeyAuthSchema, BasicAuthSchema, OAuth2AuthSchema } from '../shared/auth';
+
+interface OpenApiConverterOptions {
+  specUrl?: string;
+  providerName?: string;
+}
 
 /**
  * Converts an OpenAPI JSON specification into a UtcpManual.
  */
 export class OpenApiConverter {
   private spec: Record<string, any>;
+  private specUrl: string | undefined;
+  private providerName: string;
 
   /**
    * Creates a new OpenAPI converter instance
    * @param openapi_spec The OpenAPI specification object
+   * @param options Optional settings, like the specUrl
    */
-  constructor(openapi_spec: Record<string, any>) {
+  constructor(openapi_spec: Record<string, any>, options?: OpenApiConverterOptions) {
     this.spec = openapi_spec;
+    this.specUrl = options?.specUrl;
+    
+    // If providerName is not provided, get the first word in spec.info.title
+    if (!options?.providerName) {
+      const title = openapi_spec.info?.title || 'openapi_provider';
+      // Replace characters that are invalid for identifiers
+      const invalidChars = " -.,!?'\"\\/()[]{}#@$%^&*+=~`|;:<>";
+      this.providerName = title
+        .split('')
+        .map((c: string) => invalidChars.includes(c) ? '_' : c)
+        .join('');
+    } else {
+      this.providerName = options.providerName;
+    }
   }
 
   /**
@@ -22,8 +45,21 @@ export class OpenApiConverter {
    */
   convert(): UtcpManual {
     const tools: Tool[] = [];
-    const servers = this.spec.servers || [{ url: '/' }];
-    const baseUrl = servers[0]?.url || '/';
+    let baseUrl = '/';
+
+    const servers = this.spec.servers;
+    if (servers && Array.isArray(servers) && servers.length > 0 && servers[0].url) {
+        baseUrl = servers[0].url;
+    } else if (this.specUrl) {
+        try {
+            const parsedUrl = new URL(this.specUrl);
+            baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
+        } catch (e) {
+            console.error(`Invalid specUrl provided: ${this.specUrl}`);
+        }
+    } else {
+        console.error("No server info or spec URL provided. Using fallback base URL: / ");
+    }
 
     const paths = this.spec.paths || {};
     for (const [path, pathItem] of Object.entries(paths)) {
@@ -37,10 +73,7 @@ export class OpenApiConverter {
       }
     }
 
-    return {
-      version: this.spec.info?.version || '1.0.0',
-      tools
-    };
+    return UtcpManualSchema.parse({ tools });
   }
 
   /**
@@ -115,31 +148,23 @@ export class OpenApiConverter {
     const description = operation.summary || operation.description || '';
     const tags = operation.tags || [];
 
-    const inputs = this._extractInputs(operation);
+    const { inputs, header_fields, body_field } = this._extractInputs(operation);
     const outputs = this._extractOutputs(operation);
+    const auth = this._extractAuth(operation);
 
     const providerName = this.spec.info?.title || 'openapi_provider';
     
-    // Normalize the method to ensure it's valid for the enum
-    const httpMethod = method.toUpperCase() as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
-    
-    // Properly concatenate the URL and path (ensuring no double slashes)
-    const fullUrl = baseUrl.endsWith('/') && path.startsWith('/') 
-      ? baseUrl + path.substring(1)
-      : (!baseUrl.endsWith('/') && !path.startsWith('/')) 
-        ? baseUrl + '/' + path
-        : baseUrl + path;
-    
-    // Create provider without body_field and use type assertion
-    // This works because the actual schema has default values
-    const provider = {
+    const fullUrl = `${baseUrl.replace(/\/$/, '')}/${path.replace(/^\//, '')}`;
+
+    const provider = HttpProviderSchema.parse({
       name: providerName,
-      provider_type: 'http' as const,
-      http_method: httpMethod,
+      provider_type: 'http',
+      http_method: method.toUpperCase(),
       url: fullUrl,
-      content_type: 'application/json',
-      headers: {}
-    } as HttpProvider;
+      body_field: body_field || undefined,
+      header_fields: header_fields.length > 0 ? header_fields : undefined,
+      auth
+    });
 
     return {
       name: operationId,
@@ -147,18 +172,20 @@ export class OpenApiConverter {
       inputs,
       outputs,
       tags,
-      provider
+      tool_provider: provider
     };
   }
 
   /**
    * Extracts the input schema from an OpenAPI operation, resolving refs.
    * @param operation The OpenAPI operation object
-   * @returns The input schema
+   * @returns The input schema, header fields, and body field
    */
-  private _extractInputs(operation: Record<string, any>): ToolInputOutputSchema {
+  private _extractInputs(operation: Record<string, any>): { inputs: ToolInputOutputSchema; header_fields: string[]; body_field: string | null } {
     const properties: Record<string, any> = {};
     let required: string[] = [];
+    const header_fields: string[] = [];
+    let body_field: string | null = null;
 
     // Handle parameters (path, query, header, cookie)
     for (const param of operation.parameters || []) {
@@ -166,6 +193,10 @@ export class OpenApiConverter {
       const paramName = resolvedParam.name;
       
       if (paramName) {
+        if (resolvedParam.in === 'header') {
+            header_fields.push(paramName);
+        }
+
         const schema = this._resolveSchema(resolvedParam.schema || {});
         properties[paramName] = {
           type: schema.type || 'string',
@@ -187,23 +218,23 @@ export class OpenApiConverter {
       const jsonSchema = content['application/json']?.schema;
       
       if (jsonSchema) {
-        const resolvedJsonSchema = this._resolveSchema(jsonSchema);
-        
-        if (resolvedJsonSchema.type === 'object' && resolvedJsonSchema.properties) {
-          Object.assign(properties, resolvedJsonSchema.properties);
-          
-          if (resolvedJsonSchema.required) {
-            required = [...required, ...resolvedJsonSchema.required];
-          }
+        body_field = 'body';
+        properties[body_field] = {
+            description: resolvedBody.description || 'Request body',
+            ...this._resolveSchema(jsonSchema),
+        };
+        if (resolvedBody.required) {
+            required.push(body_field);
         }
       }
     }
 
-    return {
-      type: 'object',
+    const inputs = ToolInputOutputSchema.parse({
       properties,
       required: required.length > 0 ? required : undefined
-    };
+    });
+
+    return { inputs, header_fields, body_field };
   }
 
   /**
@@ -216,10 +247,7 @@ export class OpenApiConverter {
     const successResponse = responses['200'] || responses['201'];
     
     if (!successResponse) {
-      return {
-        type: 'object',
-        properties: {}
-      };
+      return ToolInputOutputSchema.parse({});
     }
 
     const resolvedResponse = this._resolveSchema(successResponse);
@@ -227,18 +255,167 @@ export class OpenApiConverter {
     const jsonSchema = content['application/json']?.schema;
 
     if (!jsonSchema) {
-      return {
-        type: 'object',
-        properties: {}
-      };
+      return ToolInputOutputSchema.parse({});
     }
 
     const resolvedJsonSchema = this._resolveSchema(jsonSchema);
     
-    return {
+    const schemaArgs: Record<string, any> = {
       type: resolvedJsonSchema.type || 'object',
       properties: resolvedJsonSchema.properties || {},
-      required: resolvedJsonSchema.required
+      required: resolvedJsonSchema.required,
+      description: resolvedJsonSchema.description,
+      title: resolvedJsonSchema.title
     };
+    
+    // Handle array item types
+    if (schemaArgs.type === 'array' && 'items' in resolvedJsonSchema) {
+      schemaArgs.items = resolvedJsonSchema.items;
+    }
+    
+    // Handle additional schema attributes
+    for (const attr of ['enum', 'minimum', 'maximum', 'format']) {
+      if (attr in resolvedJsonSchema) {
+        schemaArgs[attr] = resolvedJsonSchema[attr];
+      }
+    }
+    
+    return ToolInputOutputSchema.parse(schemaArgs);
+  }
+
+  /**
+   * Extracts authentication information from OpenAPI operation and global security schemes.
+   * @param operation The OpenAPI operation object
+   * @returns An Auth object or undefined if no authentication is specified
+   */
+  private _extractAuth(operation: Record<string, any>): Auth | undefined {
+    // First check for operation-level security requirements
+    let securityRequirements = operation.security || [];
+    
+    // If no operation-level security, check global security requirements
+    if (!securityRequirements.length) {
+      securityRequirements = this.spec.security || [];
+    }
+    
+    // If no security requirements, return undefined
+    if (!securityRequirements.length) {
+      return undefined;
+    }
+    
+    // Get security schemes - support both OpenAPI 2.0 and 3.0
+    const securitySchemes = this._getSecuritySchemes();
+    
+    // Process the first security requirement (most common case)
+    // Each security requirement is a dict with scheme name as key
+    for (const securityReq of securityRequirements) {
+      for (const [schemeName, scopes] of Object.entries(securityReq)) {
+        if (schemeName in securitySchemes) {
+          const scheme = securitySchemes[schemeName];
+          return this._createAuthFromScheme(scheme, schemeName);
+        }
+      }
+    }
+    
+    return undefined;
+  }
+  
+  /**
+   * Gets security schemes supporting both OpenAPI 2.0 and 3.0.
+   * @returns A record of security schemes
+   */
+  private _getSecuritySchemes(): Record<string, any> {
+    // OpenAPI 3.0 format
+    if ('components' in this.spec) {
+      return this.spec.components?.securitySchemes || {};
+    }
+    
+    // OpenAPI 2.0 format
+    return this.spec.securityDefinitions || {};
+  }
+  
+  /**
+   * Creates an Auth object from an OpenAPI security scheme.
+   * @param scheme The security scheme object
+   * @param schemeName The name of the scheme
+   * @returns An Auth object or undefined if the scheme is not supported
+   */
+  private _createAuthFromScheme(scheme: Record<string, any>, schemeName: string): Auth | undefined {
+    const schemeType = (scheme.type || '').toLowerCase();
+
+    if (schemeType === 'apikey') {
+      const location = scheme.in || 'header';
+      const paramName = scheme.name || 'Authorization';
+      return ApiKeyAuthSchema.parse({
+        auth_type: 'api_key',
+        api_key: `\$${this.providerName.toUpperCase()}_API_KEY`,
+        var_name: paramName,
+        location,
+      });
+    }
+
+    if (schemeType === 'basic') {
+      return BasicAuthSchema.parse({
+        auth_type: 'basic',
+        username: `\$${this.providerName.toUpperCase()}_USERNAME`,
+        password: `\$${this.providerName.toUpperCase()}_PASSWORD`,
+      });
+    }
+
+    if (schemeType === 'http') {
+      const httpScheme = (scheme.scheme || '').toLowerCase();
+      if (httpScheme === 'basic') {
+        return BasicAuthSchema.parse({
+          auth_type: 'basic',
+          username: `\$${this.providerName.toUpperCase()}_USERNAME`,
+          password: `\$${this.providerName.toUpperCase()}_PASSWORD`,
+        });
+      } else if (httpScheme === 'bearer') {
+        return ApiKeyAuthSchema.parse({
+          auth_type: 'api_key',
+          api_key: `Bearer \$${this.providerName.toUpperCase()}_API_KEY`,
+          var_name: 'Authorization',
+          location: 'header',
+        });
+      }
+    }
+
+    if (schemeType === 'oauth2') {
+      const flows = scheme.flows || {};
+
+      // OpenAPI 3.0 format
+      if (Object.keys(flows).length > 0) {
+        for (const [flowType, flowConfig] of Object.entries(flows)) {
+          if (['authorizationCode', 'accessCode', 'clientCredentials', 'application'].includes(flowType)) {
+            const tokenUrl = (flowConfig as Record<string, any>).tokenUrl;
+            if (tokenUrl) {
+              const scopes = (flowConfig as Record<string, any>).scopes || {};
+              return OAuth2AuthSchema.parse({
+                auth_type: 'oauth2',
+                token_url: tokenUrl,
+                client_id: `\$${this.providerName.toUpperCase()}_CLIENT_ID`,
+                client_secret: `\$${this.providerName.toUpperCase()}_CLIENT_SECRET`,
+                scope: Object.keys(scopes).length > 0 ? Object.keys(scopes).join(' ') : undefined,
+              });
+            }
+          }
+        }
+      }
+      // OpenAPI 2.0 format
+      else {
+        const flowType = scheme.flow || '';
+        const tokenUrl = scheme.tokenUrl;
+        if (tokenUrl && ['accessCode', 'application', 'clientCredentials'].includes(flowType)) {
+          return OAuth2AuthSchema.parse({
+            auth_type: 'oauth2',
+            token_url: tokenUrl,
+            client_id: `\$${this.providerName.toUpperCase()}_CLIENT_ID`,
+            client_secret: `\$${this.providerName.toUpperCase()}_CLIENT_SECRET`,
+            scope: Object.keys(scheme.scopes || {}).length > 0 ? Object.keys(scheme.scopes || {}).join(' ') : undefined,
+          });
+        }
+      }
+    }
+
+    return undefined;
   }
 }

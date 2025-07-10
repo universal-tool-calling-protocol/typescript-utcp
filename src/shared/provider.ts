@@ -32,9 +32,8 @@ export type ProviderType = z.infer<typeof ProviderTypeSchema>;
  * Base Provider schema
  */
 export const ProviderSchema = z.object({
-  name: z.string(),
+  name: z.string().optional().default(() => crypto.randomUUID()),
   provider_type: ProviderTypeSchema,
-  startup_command: z.array(z.string()).optional(), // For launching the provider if needed
 });
 
 export type Provider = z.infer<typeof ProviderSchema>;

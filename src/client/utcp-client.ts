@@ -3,7 +3,24 @@ import * as path from 'path';
 import { z } from 'zod';
 import { parse } from 'dotenv';
 
-import { HttpProvider, Provider, ProviderSchema, ProviderUnion, ProviderUnionSchema, TextProvider } from '../shared/provider';
+import { 
+  HttpProvider, 
+  Provider, 
+  ProviderSchema, 
+  ProviderUnion, 
+  ProviderUnionSchema, 
+  TextProvider,
+  CliProvider, 
+  SSEProvider, 
+  StreamableHttpProvider,
+  WebSocketProvider,
+  GRPCProvider,
+  GraphQLProvider,
+  TCPProvider,
+  UDPProvider,
+  WebRTCProvider,
+  MCPProvider 
+} from '../shared/provider';
 import { Tool } from '../shared/tool';
 import { ClientTransportInterface } from './client-transport-interface';
 import { InMemToolRepository } from './tool-repositories/in-mem-tool-repository';
@@ -25,27 +42,27 @@ export interface UtcpClientInterface {
   /**
    * Registers a tool provider and its tools.
    *
-   * @param provider The provider to register.
+   * @param manual_provider The provider to register.
    * @returns A promise that resolves to a list of tools associated with the provider.
    */
-  registerToolProvider(provider: ProviderUnion): Promise<Tool[]>;
+  register_tool_provider(manual_provider: ProviderUnion): Promise<Tool[]>;
 
   /**
    * Deregisters a tool provider.
    *
-   * @param providerName The name of the provider to deregister.
+   * @param provider_name The name of the provider to deregister.
    * @returns A promise that resolves when the provider is deregistered.
    */
-  deregisterToolProvider(providerName: string): Promise<void>;
+  deregister_tool_provider(provider_name: string): Promise<void>;
 
   /**
    * Calls a tool with the given arguments.
    *
-   * @param toolName The name of the tool to call (e.g., 'providerName.toolName').
+   * @param tool_name The name of the tool to call (e.g., 'providerName.toolName').
    * @param args The arguments to pass to the tool.
    * @returns A promise that resolves to the result of the tool call.
    */
-  callTool(toolName: string, args: Record<string, unknown>): Promise<unknown>;
+  call_tool(tool_name: string, args: Record<string, unknown>): Promise<unknown>;
 
   /**
    * Searches for tools relevant to the query.
@@ -54,15 +71,17 @@ export interface UtcpClientInterface {
    * @param limit The maximum number of tools to return. 0 for no limit.
    * @returns A promise that resolves to a list of tools that match the search query.
    */
-  searchTools(query: string, limit?: number): Promise<Tool[]>;
+  search_tools(query: string, limit?: number): Promise<Tool[]>;
 }
 
 /**
  * The main client for interacting with the Universal Tool Calling Protocol (UTCP).
  */
 export class UtcpClient implements UtcpClientInterface {
-  private readonly httpTransport = new HttpClientTransport();
-  private readonly textTransport = new TextTransport();
+  private transports: Record<string, ClientTransportInterface> = {
+    'http': new HttpClientTransport(),
+    'text': new TextTransport(),
+  };
 
   private constructor(
     public readonly config: UtcpClientConfig,
@@ -73,17 +92,24 @@ export class UtcpClient implements UtcpClientInterface {
   /**
    * Creates and initializes a new instance of the UtcpClient.
    *
-   * @param config The configuration for the client. Can be a partial config object.
+   * @param config The configuration for the client. Can be a partial config object or a complete UtcpClientConfig.
    * @param toolRepository The tool repository to use. Defaults to InMemToolRepository.
    * @param searchStrategy The tool search strategy to use. Defaults to TagSearchStrategy.
    * @returns A promise that resolves to a new, initialized instance of UtcpClient.
    */
   public static async create(
-    config: Partial<UtcpClientConfig> = {},
+    config: Partial<UtcpClientConfig> | UtcpClientConfig = {},
     toolRepository: ToolRepository = new InMemToolRepository(),
     searchStrategy?: ToolSearchStrategy,
   ): Promise<UtcpClient> {
-    const validatedConfig = UtcpClientConfigSchema.parse(config);
+    let validatedConfig: UtcpClientConfig;
+    
+    if ('toJSON' in config && typeof config.toJSON === 'function') {
+      // It's already a UtcpClientConfig instance
+      validatedConfig = config as UtcpClientConfig;
+    } else {
+      validatedConfig = UtcpClientConfigSchema.parse(config);
+    }
 
     const finalSearchStrategy = searchStrategy ?? new TagSearchStrategy(toolRepository);
 
@@ -93,26 +119,33 @@ export class UtcpClient implements UtcpClientInterface {
       finalSearchStrategy,
     );
 
+    // If a providers file is used, configure TextTransport to resolve relative paths from its directory
+    if (client.config.providers_file_path) {
+      const providersDir = path.dirname(path.resolve(client.config.providers_file_path));
+      client.transports['text'] = new TextTransport(providersDir);
+    }
+    
+    if (client.config.variables) {
+      const configWithoutVars = { ...client.config };
+      configWithoutVars.variables = {};
+      client.config.variables = await client.replaceVarsInObj(client.config.variables);
+    }
+
     await client.loadVariables();
     await client.loadProvidersFromFile();
 
     return client;
   }
 
-  public async registerToolProvider(provider: ProviderUnion): Promise<Tool[]> {
-    const processedProvider = await this.substituteProviderVariables(provider);
-    let tools: Tool[];
-
-    switch (processedProvider.provider_type) {
-      case 'http':
-        tools = await this.httpTransport.register_tool_provider(processedProvider);
-        break;
-      case 'text':
-        tools = await this.textTransport.register_tool_provider(processedProvider);
-        break;
-      default:
-        throw new Error(`Provider type not supported: ${processedProvider.provider_type}`);
+  public async register_tool_provider(manual_provider: ProviderUnion): Promise<Tool[]> {
+    const processedProvider = await this.substituteProviderVariables(manual_provider);
+    processedProvider.name = processedProvider.name.replace('.', '_');
+    
+    if (!this.transports[processedProvider.provider_type]) {
+      throw new Error(`Provider type not supported: ${processedProvider.provider_type}`);
     }
+    
+    const tools: Tool[] = await this.transports[processedProvider.provider_type]!!.register_tool_provider(processedProvider);
 
     // Ensure tool names are prefixed with the provider name
     for (const tool of tools) {
@@ -125,52 +158,57 @@ export class UtcpClient implements UtcpClientInterface {
     return tools;
   }
 
-  public async deregisterToolProvider(providerName: string): Promise<void> {
-    const provider = await this.toolRepository.getProvider(providerName);
+  public async deregister_tool_provider(provider_name: string): Promise<void> {
+    const provider = await this.toolRepository.getProvider(provider_name);
     if (!provider) {
-      throw new Error(`Provider not found: ${providerName}`);
+      throw new Error(`Provider not found: ${provider_name}`);
     }
 
-    switch (provider.provider_type) {
-      case 'http':
-        await this.httpTransport.deregister_tool_provider(provider);
-        break;
-      case 'text':
-        await this.textTransport.deregister_tool_provider(provider);
-        break;
-      // No default case needed if we just want to ignore unsupported types
+    if (this.transports[provider.provider_type]) {
+      await this.transports[provider.provider_type]!!.deregister_tool_provider(provider);
     }
 
-    await this.toolRepository.removeProvider(providerName);
+    await this.toolRepository.removeProvider(provider_name);
   }
 
-  public async callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
-    const providerName = toolName.split('.')[0];
-    if (!providerName) {
+  public async call_tool(tool_name: string, args: Record<string, unknown>): Promise<unknown> {
+    const provider_name = tool_name.split('.')[0];
+    if (!provider_name) {
       throw new Error('Invalid tool name format. Expected provider_name.tool_name');
     }
 
-    const tool = await this.toolRepository.getTool(toolName);
+    const provider = await this.toolRepository.getProvider(provider_name);
+    if (!provider) {
+      throw new Error(`Provider not found: ${provider_name}`);
+    }
+
+    const tools = await this.toolRepository.getToolsByProvider(provider_name);
+    const tool = tools?.find(t => t.name === tool_name);
     if (!tool) {
-      throw new Error(`Tool not found: ${toolName}`);
+      throw new Error(`Tool not found: ${tool_name}`);
     }
 
-    const provider = await this.substituteProviderVariables(tool.provider);
+    const processed_provider = await this.substituteProviderVariables(tool.tool_provider);
 
-    switch (provider.provider_type) {
-      case 'http':
-        return this.httpTransport.call_tool(toolName, args, provider);
-      case 'text':
-        return this.textTransport.call_tool(toolName, args, provider);
-      default:
-        throw new Error(`Transport for provider type ${provider.provider_type} not found.`);
+    if (!this.transports[processed_provider.provider_type]) {
+      throw new Error(`Transport for provider type ${processed_provider.provider_type} not found.`);
     }
+
+    return this.transports[processed_provider.provider_type]!!.call_tool(tool_name, args, processed_provider);
   }
 
-  public searchTools(query: string, limit: number = 10): Promise<Tool[]> {
+  public search_tools(query: string, limit: number = 10): Promise<Tool[]> {
     return this.searchStrategy.searchTools(query, limit);
   }
 
+  /**
+   * Load providers from the file specified in the configuration.
+   * 
+   * @returns A promise that resolves to a list of registered Provider objects.
+   * @throws FileNotFoundError if the providers file doesn't exist.
+   * @throws Error if the providers file contains invalid JSON.
+   * @throws UtcpVariableNotFoundError if a variable referenced in the provider configuration is not found.
+   */
   private async loadProvidersFromFile(): Promise<void> {
     if (!this.config.providers_file_path) {
       return;
@@ -188,7 +226,7 @@ export class UtcpClient implements UtcpClientInterface {
       for (const providerData of providersData) {
         try {
           const provider = ProviderUnionSchema.parse(providerData);
-          await this.registerToolProvider(provider);
+          await this.register_tool_provider(provider);
           console.log(`Successfully registered provider '${provider.name}'`);
         } catch (error) {
           const providerName = (providerData as any)?.name || 'unknown';
@@ -240,13 +278,22 @@ export class UtcpClient implements UtcpClientInterface {
 
   private async replaceVarsInObj(obj: any): Promise<any> {
     if (typeof obj === 'string') {
-      const regex = /\$\{([^}]+)\}/g;
+      // Support both ${VAR} and $VAR formats like Python version
+      const regex = /\$\{([^}]+)\}|\$(\w+)/g;
       let result = obj;
       let match;
       while ((match = regex.exec(obj)) !== null) {
-        const varName = match[1]!;
-        const varValue = await this.getVariable(varName);
-        result = result.replace(match[0], varValue);
+        // The first group that is not undefined is the one that matched
+        const varName = match[1] || match[2];
+        if (!varName) continue;
+        
+        try {
+          const varValue = await this.getVariable(varName);
+          result = result.replace(match[0], varValue);
+        } catch (error) {
+          // Continue with other variables even if one fails
+          console.warn(`Variable not found: ${varName}`);
+        }
       }
       return result;
     }

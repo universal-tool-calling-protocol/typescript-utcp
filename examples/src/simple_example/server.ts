@@ -1,7 +1,7 @@
 import express from 'express';
-import { HttpProvider } from '../src/shared/provider';
-import { Tool } from '../src/shared/tool';
-import { UtcpManual } from '../src/shared/utcp-manual';
+import { HttpProvider } from '../../../src/shared/provider';
+import { Tool } from '../../../src/shared/tool';
+import { UtcpManual } from '../../../src/shared/utcp-manual';
 
 const app = express();
 app.use(express.json());
@@ -15,7 +15,7 @@ const testTool: Tool = {
   name: 'test_endpoint',
   description: 'A simple test endpoint that echoes a value.',
   tags: ['test', 'example'],
-  provider: {
+  tool_provider: {
     name: 'test_provider',
     provider_type: 'http',
     url: `${BASE_PATH}/test`,

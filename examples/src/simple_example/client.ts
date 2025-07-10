@@ -1,4 +1,4 @@
-import { UtcpClient } from '../src/client/utcp-client';
+import { UtcpClient } from '../../../src/client/utcp-client';
 
 async function main() {
   console.log('Initializing UTCP client...');
@@ -28,7 +28,7 @@ async function main() {
 
   console.log(`\nCalling tool: '${toolToCall.name}'...`);
   try {
-    const result = await client.callTool(toolToCall.name, args);
+    const result = await client.call_tool(toolToCall.name, args);
     console.log('Tool call result:');
     console.log(result);
   } catch (error) {

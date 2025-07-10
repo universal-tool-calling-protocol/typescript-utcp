@@ -2,7 +2,7 @@
   {
     "name": "tool_a",
     "description": "a",
-    "provider": {
+    "tool_provider": {
       "provider_type": "text",
       "name": "test-text-provider",
       "file_path": "./tool-array.test.json"
@@ -11,7 +11,7 @@
   {
     "name": "tool_b",
     "description": "b",
-    "provider": {
+    "tool_provider": {
       "provider_type": "text",
       "name": "test-text-provider",
       "file_path": "./tool-array.test.json"
