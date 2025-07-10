@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "tools": [
+    {
+      "name": "tool1",
+      "description": "desc1",
+      "tool_provider": {
+        "provider_type": "text",
+        "name": "test-text-provider",
+        "file_path": "./manual.test.json"
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "test_provider",
+    "provider_type": "http",
+    "http_method": "GET",
+    "url": "http://localhost:8080/utcp",
+    "content_type": "application/json",
+    "body_field": "body"
+  }
+]

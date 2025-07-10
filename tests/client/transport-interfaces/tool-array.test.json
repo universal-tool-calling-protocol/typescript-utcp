@@ -1,0 +1,20 @@
+[
+  {
+    "name": "tool_a",
+    "description": "a",
+    "tool_provider": {
+      "provider_type": "text",
+      "name": "test-text-provider",
+      "file_path": "./tool-array.test.json"
+    }
+  },
+  {
+    "name": "tool_b",
+    "description": "b",
+    "tool_provider": {
+      "provider_type": "text",
+      "name": "test-text-provider",
+      "file_path": "./tool-array.test.json"
+    }
+  }
+]
