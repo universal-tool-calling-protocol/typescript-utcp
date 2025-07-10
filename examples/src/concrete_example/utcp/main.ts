@@ -1,6 +1,6 @@
 import path from 'path';
-import { UtcpClient } from '../../../src/client/utcp-client';
-import { UtcpClientConfig } from '../../../src/client/utcp-client-config';
+import { UtcpClient } from '../../../../src/client/utcp-client';
+import { UtcpClientConfig } from '../../../../src/client/utcp-client-config';
 import { Job, JobSearchInput, JobSearchOutput } from './models';
 
 const candidateProfile = {
