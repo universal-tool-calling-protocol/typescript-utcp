@@ -1,0 +1,163 @@
+{
+  "version": "1.0",
+  "tools": [
+    {
+      "name": "jobs",
+      "description": "Search for jobs from theirstack.com filtered by country, date, and other parameters. This endpoint allows retrieval of recent job postings with filtering support.",
+      "tags": [
+        "jobs"
+      ],
+      "inputs": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "description": "The page number to retrieve. Starts at 0."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "The number of job listings to retrieve per page. Default is 25."
+          },
+          "job_country_code_or": {
+            "type": "array",
+            "description": "An array of ISO 3166-1 alpha-2 country codes to filter jobs by location.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "posted_at_max_age_days": {
+            "type": "integer",
+            "description": "Maximum age of the job posting in days. For example, 7 returns jobs posted in the last 7 days."
+          }
+        },
+        "required": [
+          "page",
+          "limit",
+          "job_country_code_or",
+          "posted_at_max_age_days"
+        ]
+      },
+      "outputs": {
+        "type": "object",
+        "properties": {
+          "metadata": {
+            "type": "object",
+            "properties": {
+              "total_results": { "type": "integer" },
+              "truncated_results": { "type": "integer" },
+              "truncated_companies": { "type": "integer" },
+              "total_companies": { "type": "integer" }
+            }
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "integer" },
+                "job_title": { "type": "string" },
+                "url": { "type": "string" },
+                "date_posted": { "type": "string", "format": "date" },
+                "has_blurred_data": { "type": "boolean" },
+                "company": { "type": "string" },
+                "final_url": { "type": "string" },
+                "source_url": { "type": "string" },
+                "location": { "type": "string" },
+                "short_location": { "type": "string" },
+                "long_location": { "type": "string" },
+                "state_code": { "type": "string" },
+                "latitude": { "type": "number" },
+                "longitude": { "type": "number" },
+                "postal_code": { "type": "string" },
+                "remote": { "type": "boolean" },
+                "hybrid": { "type": "boolean" },
+                "salary_string": { "type": "string" },
+                "min_annual_salary": { "type": "number" },
+                "min_annual_salary_usd": { "type": "number" },
+                "max_annual_salary": { "type": "number" },
+                "max_annual_salary_usd": { "type": "number" },
+                "avg_annual_salary_usd": { "type": "number" },
+                "salary_currency": { "type": "string" },
+                "country": { "type": "string" },
+                "seniority": { "type": "string" },
+                "country_codes": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "country_code": { "type": "string" },
+                "discovered_at": { "type": "string", "format": "date-time" },
+                "company_domain": { "type": "string" },
+                "hiring_team": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "first_name": { "type": "string" },
+                      "full_name": { "type": "string" },
+                      "image_url": { "type": "string" },
+                      "linkedin_url": { "type": "string" },
+                      "role": { "type": "string" },
+                      "thumbnail_url": { "type": "string" }
+                    }
+                  }
+                },
+                "reposted": { "type": "boolean" },
+                "date_reposted": { "type": "string", "format": "date" },
+                "employment_statuses": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "easy_apply": { "type": "boolean" },
+                "description": { "type": "string" },
+                "company_object": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "domain": { "type": "string" },
+                    "industry": { "type": "string" },
+                    "country": { "type": "string" },
+                    "country_code": { "type": "string" },
+                    "employee_count": { "type": "integer" },
+                    "logo": { "type": "string" },
+                    "num_jobs": { "type": "integer" },
+                    "num_technologies": { "type": "integer" },
+                    "possible_domains": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                "normalized_title": { "type": "string" },
+                "manager_roles": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "matching_phrases": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "matching_words": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "tool_provider": {
+        "provider_type": "http",
+        "url": "https://api.theirstack.com/v1/jobs/search",
+        "http_method": "POST",
+        "content_type": "application/json",
+        "auth": {
+          "auth_type": "api_key",
+          "location": "header",
+          "var_name": "Authorization",
+          "api_key": "Bearer $THEIRSTACK_API_TOKEN"
+        }
+      }
+    }
+  ]
+}

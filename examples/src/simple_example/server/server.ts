@@ -1,7 +1,7 @@
 import express from 'express';
-import { HttpProvider } from '../../../src/shared/provider';
-import { Tool } from '../../../src/shared/tool';
-import { UtcpManual } from '../../../src/shared/utcp-manual';
+import { HttpProvider } from '../../../../src/shared/provider';
+import { Tool } from '../../../../src/shared/tool';
+import { UtcpManual } from '../../../../src/shared/utcp-manual';
 
 const app = express();
 app.use(express.json());
