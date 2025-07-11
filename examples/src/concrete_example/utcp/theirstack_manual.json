@@ -2,7 +2,7 @@
   "version": "1.0",
   "tools": [
     {
-      "name": "job_search_post",
+      "name": "jobs",
       "description": "Search for jobs from theirstack.com filtered by country, date, and other parameters. This endpoint allows retrieval of recent job postings with filtering support.",
       "tags": [
         "jobs"

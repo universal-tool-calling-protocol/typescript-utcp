@@ -4,7 +4,7 @@
   "main": "main.ts",
   "scripts": {
     "build": "tsc",
-    "start": "ts-node main.ts",
+    "start": "npm run build && node dist/main.js",
     "dev": "nodemon --watch '**/*.ts' --exec 'ts-node' main.ts"
   },
   "dependencies": {

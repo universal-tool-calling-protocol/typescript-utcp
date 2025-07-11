@@ -18,6 +18,8 @@ async function main() {
   const result = await client.callTool({
     name: "theirstack.jobs",
     arguments: {
+      page: 0,
+      limit: 1,
       job_country_code_or: [ "US" ],
       posted_at_max_age_days: 7
     }

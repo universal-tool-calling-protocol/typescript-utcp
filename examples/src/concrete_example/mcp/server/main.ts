@@ -16,19 +16,21 @@ server.registerTool("theirstack.jobs",
     title: "Jobs Search",
     description: "Search for jobs using Theirstack API",
     inputSchema: {
+      page: z.number(),
+      limit: z.number(),
       job_country_code_or: z.array(z.string()),
       posted_at_max_age_days: z.number()
     }
   },
-  async ({ job_country_code_or, posted_at_max_age_days }) => {
+  async ({ page, limit, job_country_code_or, posted_at_max_age_days }) => {
     const headers = {
       Authorization: `Bearer ${process.env.THEIRSTACK_API_TOKEN}`,
       'Content-Type': 'application/json',
     };
 
     const payload = {
-      limit: 1,
-      page: 0,
+      limit,
+      page,
       job_country_code_or,
       posted_at_max_age_days,
     };

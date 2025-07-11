@@ -33,6 +33,7 @@
     "examples/**/*"
   ],
   "exclude": [
+    "examples/src/concrete_example/**/*",
     "node_modules",
     "dist"
   ]
