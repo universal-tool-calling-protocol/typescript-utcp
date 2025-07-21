@@ -344,12 +344,4 @@ For wrapping local command-line tools.
 }
 ```
 
-# Contributors
-
-## Main contributors
-- Razvan-Ion Radulescu (razvan.radulescu@bevel.software, www.bevel.software)
-- Andrei-Stefan Ghiurtu (https://www.linkedin.com/in/andrei-stefan-ghiurtu/)
-
-## Distribution Team
-- Juan Viera Garcia (juan@bevel.software, www.bevel.software)
-- Ali Raza (ali.raza@bevel.software, www.bevel.software)
+# [Contributors](https://www.utcp.io/about)
