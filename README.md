@@ -1,3 +1,7 @@
+# OUTDATED!!!! 
+
+Work on updating this to 1.0 is in progress
+
 # Universal Tool Calling Protocol (UTCP) for TypeScript
 
 [![NPM version](https://img.shields.io/npm/v/@utcp/sdk.svg)](https://www.npmjs.com/package/@utcp/sdk)
