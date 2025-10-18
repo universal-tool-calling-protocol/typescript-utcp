@@ -16,7 +16,7 @@
     "zod": "^3.23.8"
   },
   "scripts": {
-    "clean": "bun tsc --build --clean packages/core packages/http packages/mcp packages/text packages/cli && rimraf packages/*/dist",
+    "clean": "bun tsc --build --clean packages/core packages/http packages/mcp packages/text packages/cli",
     "build": "bun tsc --build packages/core packages/http packages/mcp packages/text packages/cli",
     "rebuild": "bun run clean && bun run build",
     "test": "bun test --config tsconfig.test.json",
