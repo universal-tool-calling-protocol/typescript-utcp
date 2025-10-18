@@ -1,40 +1,50 @@
+// typescript-utcp/tsconfig.json
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
-    "lib": ["ES2020"],
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM"],
     "declaration": true,
-    "outDir": "./dist",
-    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "moduleResolution": "node",
-    "resolveJsonModule": true,
-    "allowSyntheticDefaultImports": true,
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "sourceMap": true,
-    "removeComments": false,
-    "noImplicitAny": true,
-    "strictNullChecks": true,
-    "strictFunctionTypes": true,
-    "noImplicitThis": true,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": false,
-    "types": ["jest", "node"]
+    "forceConsistentCasingInFileNames": true, 
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@utcp/core": ["packages/core/src"],
+      "@utcp/core/*": ["packages/core/src/*"],
+      "@utcp/http": ["packages/http/src"],
+      "@utcp/http/*": ["packages/http/src/*"],
+      "@utcp/mcp": ["packages/mcp/src"],
+      "@utcp/mcp/*": ["packages/mcp/src/*"],
+      "@utcp/text": ["packages/text/src"],
+      "@utcp/text/*": ["packages/text/src/*"],
+      "@utcp/cli": ["packages/cli/src"],
+      "@utcp/cli/*": ["packages/cli/src/*"],
+
+    },
+    "outDir": "dist",
+    "composite": true,
+    "allowSyntheticDefaultImports": true 
   },
   "include": [
-    "src/**/*",
+    "packages/**/src/**/*",
+    "packages/**/tests/**/*",
+    "examples/**/*", 
     "tests/**/*",
-    "examples/**/*"
   ],
   "exclude": [
-    "examples/src/concrete_example/**/*",
     "node_modules",
-    "dist"
+    "**/dist",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/http" },
+    { "path": "./packages/mcp" },
+    { "path": "./packages/text" },
+    { "path": "./packages/cli" }
   ]
 }

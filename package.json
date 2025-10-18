@@ -1,83 +1,33 @@
 {
-  "name": "@utcp/sdk",
-  "version": "0.1.1",
-  "description": "Universal Tool Calling Protocol (UTCP) client library for TypeScript",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix",
-    "prepare": "npm run build"
-  },
-  "keywords": [
-    "utcp",
-    "universal-tool-calling-protocol",
-    "tools",
-    "api",
-    "typescript",
-    "tool calling",
-    "mcp",
-    "agent",
-    "ai",
-    "llm"
-  ],
-  "author": {
-    "name": "Razvan-Ion Radulescu",
-    "email": "razvan.radulescu@bevel.software"
-  },
-  "license": "MPL-2.0",
-  "publishConfig": {
-    "access": "public"
-  },
-  "homepage": "https://utcp.io",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp"
-  },
-  "bugs": {
-    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp/issues"
-  },
-  "dependencies": {
-    "axios": "^1.6.0",
-    "dotenv": "^17.1.0",
-    "eventsource": "^2.0.2",
-    "graphql": "^16.8.1",
-    "graphql-request": "^6.1.0",
-    "js-yaml": "^4.1.0",
-    "tozod": "^3.0.0",
-    "ws": "^8.14.2",
-    "zod": "^3.22.4",
-    "zod-to-json-schema": "^3.24.6"
-  },
+  "name": "typescript-utcp",
+  "module": "index.ts",
+  "type": "module",
   "devDependencies": {
-    "@types/dotenv": "^6.1.1",
-    "@types/eventsource": "^1.1.12",
-    "@types/express": "^5.0.3",
-    "@types/jest": "^29.5.14",
     "@types/js-yaml": "^4.0.9",
-    "@types/nock": "^10.0.3",
-    "@types/node": "^20.8.0",
-    "@types/ws": "^8.5.6",
-    "@typescript-eslint/eslint-plugin": "^6.7.4",
-    "@typescript-eslint/parser": "^6.7.4",
-    "eslint": "^8.50.0",
-    "express": "^5.1.0",
-    "jest": "^29.7.0",
-    "nock": "^14.0.5",
-    "openai": "^5.8.3",
-    "ts-jest": "^29.4.0",
-    "typescript": "^5.2.2"
+    "bun-types": "^1.2.22",
+    "nock": "^14.0.10",
+    "zod": "^3.25.76"
   },
-  "files": [
-    "dist/**/*",
-    "README.md",
-    "LICENSE"
-  ],
-  "engines": {
-    "node": ">=16.0.0"
-  }
+  "peerDependencies": {
+    "typescript": "^5.9.2",
+    "zod": "^3.23.8"
+  },
+  "resolutions": {
+    "zod": "^3.23.8"
+  },
+  "scripts": {
+    "clean": "bun tsc --build --clean packages/core packages/http packages/mcp packages/text packages/cli && rimraf packages/*/dist",
+    "build": "bun tsc --build packages/core packages/http packages/mcp packages/text packages/cli examples/mcp-utcp-bridge",
+    "rebuild": "bun run clean && bun run build",
+    "test": "bun test --config tsconfig.test.json",
+    "publish:core": "cd packages/core && npm publish",
+    "publish:text": "cd packages/text && npm publish",
+    "publish:http": "cd packages/http && npm publish",
+    "publish:mcp": "cd packages/mcp && npm publish",
+    "publish:cli": "cd packages/cli && npm publish",
+    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:http && bun run publish:mcp && bun run publish:cli"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }

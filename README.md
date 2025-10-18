@@ -1,351 +1,141 @@
-# OUTDATED!!!! 
-
-Work on updating this to 1.0 is in progress
-
 # Universal Tool Calling Protocol (UTCP) for TypeScript
 
-[![NPM version](https://img.shields.io/npm/v/@utcp/sdk.svg)](https://www.npmjs.com/package/@utcp/sdk)
+[![Follow Org](https://img.shields.io/github/followers/universal-tool-calling-protocol?label=Follow%20Org&logo=github)](https://github.com/universal-tool-calling-protocol)
+[![NPM version](https://img.shields.io/npm/v/@utcp/core.svg)](https://www.npmjs.com/package/@utcp/core)
+[![License](https://img.shields.io/github/license/universal-tool-calling-protocol/python-utcp)](https://github.com/universal-tool-calling-protocol/typescript-utcp/blob/main/LICENSE)
+[![CDTM S23](https://img.shields.io/badge/CDTM-S23-0b84f3)](https://cdtm.com/)
 
-## Introduction
+**The Universal Tool Calling Protocol (UTCP) is a modern, flexible, and scalable standard for defining and interacting with tools across a wide variety of communication protocols. This repository contains the official TypeScript implementation, structured as a monorepo with a lean core and pluggable communication protocols.**
 
-The Universal Tool Calling Protocol (UTCP) is a modern, flexible, and scalable standard for defining and interacting with tools across a wide variety of communication protocols. This library is the official TypeScript implementation, designed to be easy to use, interoperable, and extensible.
+UTCP offers a unified framework for integrating disparate tools and services, making them accessible through a consistent and well-defined interface. This TypeScript SDK provides a comprehensive toolkit for developers to leverage the full power of the UTCP standard in their applications.
 
-In contrast to other protocols, UTCP places a strong emphasis on:
+## Key Features
 
-*   **Scalability**: UTCP is designed to handle a large number of tools and providers without compromising performance.
-*   **Interoperability**: With support for a wide range of provider types (including HTTP, WebSockets, SSE, and even CLI tools), UTCP can integrate with almost any existing service or infrastructure.
-*   **Type Safety**: The protocol is built on simple, well-defined TypeScript interfaces with runtime validation powered by Zod, making it robust and easy for developers to use.
+*   **Scalability**: Designed to handle a large number of tools and providers without compromising performance.
+*   **Extensibility**: A pluggable architecture allows developers to easily add new communication protocols, tool storage mechanisms, and search strategies without modifying the core library.
+*   **Interoperability**: With a growing ecosystem of protocol plugins—including HTTP, MCP, Text, and CLI—UTCP can integrate with almost any existing service or infrastructure.
+*   **Type Safety**: The protocol is built on well-defined TypeScript interfaces and runtime validation powered by Zod, making it robust and easy for developers to use.
 
-## Usage Examples
+![MCP vs. UTCP](https://github.com/user-attachments/assets/3cadfc19-8eea-4467-b606-66e580b89444)
 
-These examples illustrate the core concepts of the UTCP client and server. They are not designed to be a single, runnable example.
+## Getting Started
 
-> **Note:** For complete, end-to-end runnable examples, please refer to the `examples/` directory in this repository.
+### Installation
 
-### 1. Using the UTCP Client
+To set up the monorepo and install all dependencies, you will need to have `bun` installed. Once you have `bun`, you can clone the repository and install the dependencies as follows:
 
-Setting up a client is simple. You point it to a `providers.json` file, and it handles the rest.
+```bash
+# Clone the repository
+git clone https://github.com/universal-tool-calling-protocol/typescript-utcp.git
+cd typescript-utcp
 
-**`providers.json`**
-
-This file tells the client where to find one or more UTCP Manuals (providers which return a list of tools).
-
-```json
-[
-  {
-    "name": "example_server",
-    "provider_type": "http",
-    "url": "http://localhost:8080/utcp",
-    "http_method": "GET"
-  }
-]
+# Install dependencies for all packages in the workspace
+bun install
 ```
 
-**`client.ts`**
+### Usage Example
 
-This script initializes the client and calls a tool from the provider defined above.
+To get started, you will typically import and register the plugins you need, then create an instance of `UtcpClient`. The following example demonstrates how to register the HTTP, MCP, and Text plugins and initialize the client with a basic configuration:
 
 ```typescript
-import { UtcpClient } from './src/client/utcp-client';
+// From your application's entry point (e.g., main.ts)
+
+import { UtcpClient } from '@utcp/core';
+import { UtcpClientConfigSchema } from '@utcp/core';
+import { registerHttpPlugin } from '@utcp/http'; // Register HTTP plugin
+import { registerMcpPlugin } from '@utcp/mcp';   // Register MCP plugin
+import { registerTextPlugin } from '@utcp/text'; // Register Text plugin
+
+// --- IMPORTANT: Register all necessary plugins at application startup ---
+registerHttpPlugin();
+registerMcpPlugin();
+registerTextPlugin();
+// -------------------------------------------------------------------
 
 async function main() {
-  console.log('Initializing UTCP client...');
+  const client = await UtcpClient.create(
+    UtcpClientConfigSchema.parse({
+      // Define variables for substitution in call templates
+      variables: {
+        OPENLIBRARY_API_KEY: 'your-openlibrary-key'
+      },
+      // Optionally define manual_call_templates directly in config
+      manual_call_templates: [
+        {
+          name: 'openlibrary_api',
+          call_template_type: 'http',
+          url: 'https://openlibrary.org/static/openapi.json', // Auto-converts OpenAPI
+          http_method: 'GET'
+        },
+        {
+          name: 'my_local_tools',
+          call_template_type: 'text',
+          file_path: './config/my_tools.json' // Loads from a local file
+        }
+      ],
+      // Or load variables from .env files
+      load_variables_from: [
+        { type: 'dotenv', env_file_path: './.env' }
+      ]
+    })
+  );
 
-  const client = await UtcpClient.create({
-    providers_file_path: './providers.json',
-  });
+  console.log('UTCP Client initialized. Searching for tools...');
 
-  const tools = await client.toolRepository.getTools();
+  // Search for tools based on a query
+  const relevantTools = await client.searchTools('search for books by author');
+  console.log('Found tools:', relevantTools.map(t => t.name));
 
-  if (tools.length === 0) {
-    console.log('No tools found. Make sure the example server is running.');
-    return;
+  // Example: Call a tool (replace with an actual tool from discovery)
+  if (relevantTools.length > 0) {
+    try {
+      const toolToCall = relevantTools[0];
+      if (toolToCall) {
+        console.log(`Calling tool: ${toolToCall.name}`);
+        const result = await client.callTool(toolToCall.name, { q: 'J. K. Rowling' });
+        console.log('Tool call result:', result);
+      }
+    } catch (error) {
+      console.error('Error calling tool:', error);
+    }
   }
 
-  console.log('Registered tools:');
-  for (const tool of tools) {
-    console.log(` - ${tool.name}`);
-  }
-
-  // Call the first available tool
-  const toolToCall = tools[0]!;
-  const args = {
-    body: { value: 'hello from the client!' },
-  };
-
-  console.log(`\nCalling tool: '${toolToCall.name}'...`);
-  try {
-    const result = await client.call_tool(toolToCall.name, args);
-    console.log('Tool call result:');
-    console.log(result);
-  } catch (error) {
-    console.error('Error calling tool:', error);
-  }
+  await client.close(); // Important for resource cleanup
 }
 
-main().catch(error => {
-  console.error('An unexpected error occurred:', error);
-});
+main().catch(console.error);
 ```
 
-### 2. Providing a UTCP Manual
+## Monorepo Structure
 
-Any type of server or service can be exposed as a UTCP tool. The only requirement is that a `UtcpManual` is provided to the client. This manual can be served by the tool itself or, more powerfully, by a third-party registry. This allows for wrapping existing APIs and services that are not natively UTCP-aware.
+This repository is structured as a `bun` workspace, containing the following packages:
 
-Here is a minimal example using Express to serve a `UTCPManual` for a tool:
+*   **`packages/core`**: The lean core SDK, providing fundamental data models, interfaces, the `UtcpClient`, and a plugin registry.
+*   **`packages/http`**: A communication protocol plugin for interacting with RESTful HTTP/HTTPS APIs, including OpenAPI specification conversion.
+*   **`packages/mcp`**: A communication protocol plugin for interoperability with the Model Context Protocol (MCP) via stdio or HTTP transports.
+*   **`packages/text`**: A simple communication protocol plugin for loading UTCP manuals or OpenAPI specs from local files.
+*   **`packages/cli`**: A communication protocol plugin for executing command-line tools.
 
-**`server.ts`**
-```typescript
-import express from 'express';
-import { HttpProvider } from './src/shared/provider';
-import { Tool } from './src/shared/tool';
-import { UtcpManual } from './src/shared/utcp-manual';
+Additional plugins will be added under `packages/` for other protocols (e.g., WebSocket).
 
-const app = express();
-app.use(express.json());
+## Development & Testing
 
-const PORT = 8080;
-const __version__ = '0.1.0';
-const BASE_PATH = `http://localhost:${PORT}`;
+To build all packages in the monorepo, run the following command from the root directory:
 
-// Manually define the tool
-const testTool: Tool = {
-  name: 'test_endpoint',
-  description: 'A simple test endpoint that echoes a value.',
-  tags: ['test', 'example'],
-  tool_provider: {
-    name: 'test_provider',
-    provider_type: 'http',
-    url: `${BASE_PATH}/test`,
-    http_method: 'POST',
-  } as HttpProvider,
-  inputs: {
-    type: 'object',
-    properties: {
-      value: { type: 'string', description: 'A string value to be echoed back.' },
-    },
-    required: ['value'],
-  },
-  outputs: {
-    type: 'object',
-    properties: {
-      received: { type: 'string', description: 'The value that was received by the tool.' },
-    },
-    required: ['received'],
-  },
-};
-
-// Manually construct the UTCP manual
-const manual: UtcpManual = {
-  version: __version__,
-  tools: [testTool],
-};
-
-// Endpoint to serve the UTCP manual
-app.get('/utcp', (req, res) => {
-  res.json(manual);
-});
-
-// The actual tool endpoint
-app.post('/test', (req, res) => {
-  const { value } = req.body;
-
-  if (typeof value !== 'string') {
-    return res.status(400).json({ error: 'Invalid input: value must be a string.' });
-  }
-
-  return res.json({ received: value });
-});
-
-app.listen(PORT, () => {
-  console.log(`UTCP example server running at :${PORT}`);
-});
+```bash
+bun run build
 ```
 
-### 3. Full LLM Integration Example
+To run tests for a specific package (e.g., `@utcp/mcp`), you can specify the path to the test file:
 
-For a complete, end-to-end demonstration of how to integrate UTCP with a Large Language Model (LLM) like OpenAI, see the example in `examples/src/full_llm_example/openai_utcp_example.ts`.
-
-This advanced example showcases:
-*   **Dynamic Tool Discovery**: No hardcoded tool names. The client loads all available tools from the `providers.json` config.
-*   **Relevant Tool Search**: For each user prompt, it uses `utcpClient.search_tools()` to find the most relevant tools for the task.
-*   **LLM-Driven Tool Calls**: It instructs the OpenAI model to respond with a custom JSON format to call a tool.
-*   **Robust Execution**: It parses the LLM's response, executes the tool call via `utcpClient.call_tool()`, and sends the result back to the model for a final, human-readable answer.
-*   **Conversation History**: It maintains a full conversation history for contextual, multi-turn interactions.
-
-**To run the example:**
-1.  Navigate to the `examples/` directory.
-2.  Install dependencies: `npm install`
-3.  Navigate to `src/full_llm_example/`
-4.  Rename `example.env` to `.env` and add your OpenAI API key.
-5.  Run the example from the `examples` directory: `npx ts-node src/full_llm_example/openai_utcp_example.ts`
-
-## Protocol Specification
-
-UTCP is defined by a set of core data models that describe tools, how to connect to them (providers), and how to secure them (authentication). These models are defined as TypeScript interfaces and Zod schemas for runtime validation.
-
-### Tool Discovery
-
-For a client to use a tool, it must be provided with a `UtcpManual` object. This manual contains a list of all the tools available from a provider. Depending on the provider type, this manual might be retrieved from a discovery endpoint (like an HTTP URL) or loaded from a local source (like a file for a CLI tool).
-
-#### `UtcpManual` Model
-
-```typescript
-interface UtcpManual {
-  version: string;
-  tools: Tool[];
-}
+```bash
+bun test packages/mcp/tests/mcp_communication_protocol.test.ts
 ```
 
-*   `version`: The version of the UTCP protocol being used.
-*   `tools`: A list of `Tool` objects.
+## License
 
-### Tool Definition
+This project is licensed under the Mozilla Public License Version 2.0. See the `LICENSE` file for details.
 
-Each tool is defined by the `Tool` model.
+## Code of Conduct
 
-#### `Tool` Model
-
-```typescript
-interface Tool {
-  name: string;
-  description: string;
-  inputs: Record<string, any>; // Simplified, uses JSON schema
-  outputs: Record<string, any>; // Simplified, uses JSON schema
-  tags: string[];
-  tool_provider: ToolProvider;
-}
-```
-
-*   `name`: The name of the tool.
-*   `description`: A human-readable description of what the tool does.
-*   `inputs`: A JSON schema defining the input parameters for the tool.
-*   `outputs`: A JSON schema defining the output of the tool.
-*   `tags`: A list of tags for categorizing the tool making searching for relevant tools easier.
-*   `tool_provider`: The `ToolProvider` object that describes how to connect to and use the tool.
-
-### Authentication
-
-UTCP supports several authentication methods to secure tool access. The `auth` object within a provider's configuration specifies the authentication method to use.
-
-#### API Key (`ApiKeyAuth`)
-
-Authentication using a static API key, typically sent in a request header.
-
-```json
-{
-  "auth_type": "api_key",
-  "api_key": "YOUR_SECRET_API_KEY",
-  "var_name": "X-API-Key"
-}
-```
-
-#### Basic Auth (`BasicAuth`)
-
-Authentication using a username and password.
-
-```json
-{
-  "auth_type": "basic",
-  "username": "your_username",
-  "password": "your_password"
-}
-```
-
-#### OAuth2 (`OAuth2Auth`)
-
-Authentication using the OAuth2 client credentials flow. The UTCP client will automatically fetch a bearer token from the `token_url` and use it for subsequent requests.
-
-```json
-{
-  "auth_type": "oauth2",
-  "token_url": "https://auth.example.com/token",
-  "client_id": "your_client_id",
-  "client_secret": "your_client_secret",
-  "scope": "read write"
-}
-```
-
-### Providers
-
-Providers are at the heart of UTCP's flexibility. They define the communication protocol for a given tool. UTCP supports a wide range of provider types:
-
-*   `http`: RESTful HTTP/HTTPS API
-*   `sse`: Server-Sent Events
-*   `http_stream`: HTTP Chunked Transfer Encoding
-*   `cli`: Command Line Interface
-*   `websocket`: WebSocket bidirectional connection (work in progress)
-*   `grpc`: gRPC (Google Remote Procedure Call) (work in progress)
-*   `graphql`: GraphQL query language (work in progress)
-*   `tcp`: Raw TCP socket (work in progress)
-*   `udp`: User Datagram Protocol (work in progress)
-*   `webrtc`: Web Real-Time Communication (work in progress)
-*   `mcp`: Model Context Protocol (for interoperability)
-*   `text`: Local text file
-
-Each provider type has its own specific configuration options. For example, an `HttpProvider` will have a `url` and an `http_method`.
-
-## Provider Configuration Examples
-
-Below are examples of how to configure each of the supported provider types in a JSON configuration file. Where possible, the tool discovery endpoint should be `/utcp`. Each tool provider should offer users their json provider configuration for the tool discovery endpoint.
-
-### HTTP Provider
-
-For connecting to standard RESTful APIs.
-
-```json
-{
-  "name": "my_rest_api",
-  "provider_type": "http",
-  "url": "https://api.example.com/utcp",
-  "http_method": "POST",
-  "content_type": "application/json",
-  "auth": {
-    "auth_type": "oauth2",
-    "token_url": "https://api.example.com/oauth/token",
-    "client_id": "your_client_id",
-    "client_secret": "your_client_secret"
-  }
-}
-```
-
-#### Automatic OpenAPI Conversion
-
-UTCP simplifies integration with existing web services by automatically converting OpenAPI v3 specifications into UTCP tools. Instead of pointing to a `UtcpManual`, the `url` for an `http` provider can point directly to an OpenAPI JSON specification. The `OpenApiConverter` handles this conversion automatically, making it seamless to integrate thousands of existing APIs.
-
-```json
-{
-  "name": "open_library_api",
-  "provider_type": "http",
-  "url": "https://openlibrary.org/dev/docs/api/openapi.json"
-}
-```
-
-When the client registers this provider, it will fetch the OpenAPI spec from the URL, convert all defined endpoints into UTCP `Tool` objects, and make them available for searching and calling.
-
-### Server-Sent Events (SSE) Provider
-
-For tools that stream data using SSE. The `url` should point to the discovery endpoint.
-
-```json
-{
-  "name": "live_updates_service",
-  "provider_type": "sse",
-  "url": "https://api.example.com/utcp",
-  "event_type": "message"
-}
-```
-
-### CLI Provider
-
-For wrapping local command-line tools.
-
-```json
-{
-  "name": "my_cli_tool",
-  "provider_type": "cli",
-  "command_name": "my-command -utcp"
-}
-```
-
-# [Contributors](https://www.utcp.io/about)
+This project has adopted the Contributor Covenant Code of Conduct. For more information, see the [Code of Conduct](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).

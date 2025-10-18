@@ -1,0 +1,20 @@
+{
+  "name": "mcp-utcp-bridge",
+  "module": "mcp_utcp_bridge.ts",
+  "type": "module",
+  "dependencies": {
+    "@utcp/core": "workspace:*",
+    "@utcp/http": "workspace:*",
+    "@utcp/text": "workspace:*",
+    "@utcp/mcp": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.9.2"
+  },
+  "workspaces": [
+    "../../packages/*"
+  ]
+}

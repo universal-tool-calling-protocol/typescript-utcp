@@ -1,0 +1,58 @@
+{
+  "name": "@utcp/sdk",
+  "version": "1.0.0",
+  "description": "Universal Tool Calling Protocol SDK",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "license": "MPL-2.0",
+  "author": "UTCP Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp",
+    "directory": "packages/core"
+  },
+  "keywords": [
+    "utcp",
+    "universal-tool-calling-protocol",
+    "tools",
+    "api",
+    "typescript",
+    "tool calling",
+    "mcp",
+    "agent",
+    "ai",
+    "llm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prebuild": "rm -rf dist || rmdir /s /q dist || true",
+    "build": "tsc && node scripts/replace-version.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./*": {
+      "import": "./dist/*.js",
+      "require": "./dist/*.js",
+      "types": "./dist/*.d.ts"
+    }
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "dotenv": "^17.2.1",
+    "typescript": "^5.0.0"
+  }
+}
