@@ -17,7 +17,7 @@
   },
   "scripts": {
     "clean": "bun tsc --build --clean packages/core packages/http packages/mcp packages/text packages/cli && rimraf packages/*/dist",
-    "build": "bun tsc --build packages/core packages/http packages/mcp packages/text packages/cli examples/mcp-utcp-bridge",
+    "build": "bun tsc --build packages/core packages/http packages/mcp packages/text packages/cli",
     "rebuild": "bun run clean && bun run build",
     "test": "bun test --config tsconfig.test.json",
     "publish:core": "cd packages/core && npm publish",
