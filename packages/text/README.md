@@ -14,30 +14,25 @@ The `@utcp/text` package provides a straightforward communication protocol for t
 ## Installation
 
 ```bash
-bun add @utcp/text @utcp/core @utcp/http js-yaml
+bun add @utcp/text @utcp/sdk
+
+# Or using npm
+npm install @utcp/text @utcp/sdk
 ```
 
-Note: `@utcp/core` is a peer dependency. `@utcp/http` is a direct dependency because `TextCommunicationProtocol` uses its `OpenApiConverter` for spec conversion, and `js-yaml` is needed for YAML parsing.
+Note: `@utcp/sdk` is a peer dependency. `@utcp/http` and `js-yaml` dependencies are included automatically for OpenAPI conversion and YAML parsing.
 
 ## Usage
 
-To use the Text plugin, you must register its capabilities with the core `UtcpClient` at application startup. This is typically done by calling the `registerTextPlugin()` function exported from `@utcp/text`. Additionally, `registerHttpPlugin()` should be called if you intend to load OpenAPI specs via text files.
+The Text plugin registers automatically when you import it—no manual registration needed. Simply import from `@utcp/text` to enable text file support.
 
 ```typescript
 // From your application's entry point
 
-import { UtcpClient } from '@utcp/core/client/utcp_client';
-import { UtcpClientConfigSchema } from '@utcp/core/client/utcp_client_config';
-import { TextCallTemplateSchema } from '@utcp/text/text_call_template';
-import { registerTextPlugin } from '@utcp/text'; // Import Text plugin registration
-import { registerHttpPlugin } from '@utcp/http';   // Required for OpenAPI conversion support
+import { UtcpClient } from '@utcp/sdk';
+import { TextCallTemplateSerializer } from '@utcp/text';
 import * as path from 'path';
 import * as fs from 'fs/promises'; // For creating dummy files
-
-// --- IMPORTANT: Register necessary plugins at application startup ---
-registerTextPlugin();
-registerHttpPlugin(); // Ensure HTTP plugin is registered if using OpenAPI via Text
-// -------------------------------------------------------------------
 
 async function main() {
   // Create a dummy UTCP manual file for demonstration
@@ -81,18 +76,16 @@ async function main() {
   await fs.writeFile(staticDataPath, 'Hello from UTCP Text Plugin static data!');
 
   // Define a CallTemplate to load the local UTCP manual from the 'config' directory
-  const textCallTemplate = TextCallTemplateSchema.parse({
+  const serializer = new TextCallTemplateSerializer();
+  const textCallTemplate = serializer.validateDict({
     name: 'local_manual_loader',
     call_template_type: 'text',
     file_path: './config/my_local_manual.json', // Path relative to client's root_path
   });
 
-  const client = await UtcpClient.create(
-    UtcpClientConfigSchema.parse({
-      manual_call_templates: [textCallTemplate], // Register the text manual at client startup
-      // rootPath: process.cwd(), // UtcpClient.create will infer this by default
-    })
-  );
+  const client = await UtcpClient.create(process.cwd(), {
+    manual_call_templates: [textCallTemplate] // Register the text manual at client startup
+  });
 
   console.log('Text Plugin active. Searching for tools...');
 

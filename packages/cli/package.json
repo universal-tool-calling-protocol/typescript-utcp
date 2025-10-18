@@ -1,56 +1,56 @@
 {
-    "name": "@utcp/cli",
-    "version": "1.0.0",
-    "description": "CLI utilities for UTCP",
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
-    "type": "module",
-    "license": "MPL-2.0",
-    "author": "UTCP Contributors",
-    "repository": {
-      "type": "git",
-      "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp.git",
-      "directory": "packages/cli"
+  "name": "@utcp/cli",
+  "version": "1.0.1",
+  "description": "CLI utilities for UTCP",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "license": "MPL-2.0",
+  "author": "UTCP Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp.git",
+    "directory": "packages/cli"
+  },
+  "keywords": [
+    "utcp",
+    "universal-tool-calling-protocol",
+    "tools",
+    "api",
+    "typescript",
+    "tool calling",
+    "cli",
+    "agent",
+    "ai",
+    "llm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/*.d.ts"
     },
-    "keywords": [
-      "utcp",
-      "universal-tool-calling-protocol",
-      "tools",
-      "api",
-      "typescript",
-      "tool calling",
-      "cli",
-      "agent",
-      "ai",
-      "llm"
-    ],
-    "publishConfig": {
-      "access": "public"
-    },
-    "scripts": {
-      "build": "tsc"
-    },
-    "files": [
-      "dist"
-    ],
-    "exports": {
-      ".": {
-        "import": "./dist/index.js",
-        "require": "./dist/index.js",
-        "types": "./dist/*.d.ts"
-      },
-      "./*": {
-        "import": "./dist/*.js",
-        "require": "./dist/*.js",
-        "types": "./dist/*.d.ts"
-      }
-    },
-    "dependencies": {
-      "@utcp/sdk": "^1.0.0"
-    },
-    "devDependencies": {
-      "bun-types": "latest",
-      "typescript": "^5.0.0",
-      "@types/bun": "latest"
+    "./*": {
+      "import": "./dist/*.js",
+      "require": "./dist/*.js",
+      "types": "./dist/*.d.ts"
     }
+  },
+  "dependencies": {
+    "@utcp/sdk": "^1.0.1"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.0.0",
+    "@types/bun": "latest"
   }
+}
