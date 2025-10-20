@@ -8,13 +8,9 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { RegisterManualResult } from '@utcp/core/data/register_manual_result';
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { UtcpManual, UtcpManualSerializer } from '@utcp/core/data/utcp_manual';
-import { IUtcpClient } from '@utcp/core/interfaces/utcp_client_interface';
-import { OpenApiConverter } from '@utcp/http/openapi_converter';
-import { TextCallTemplate, TextCallTemplateSchema } from '@utcp/text/text_call_template';
+import { CommunicationProtocol, RegisterManualResult, CallTemplate, UtcpManual, UtcpManualSerializer, IUtcpClient } from '@utcp/sdk';
+import { OpenApiConverter } from '@utcp/http';
+import { TextCallTemplate, TextCallTemplateSchema } from './text_call_template';
 
 /**
  * REQUIRED

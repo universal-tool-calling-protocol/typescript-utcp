@@ -3,7 +3,7 @@ import { test, expect, beforeAll, afterAll, describe } from "bun:test";
 import { Subprocess } from "bun";
 import path from "path";
 import { McpCommunicationProtocol, McpCallTemplate } from "../src/index";
-import { IUtcpClient } from "@utcp/core";
+import { IUtcpClient } from "@utcp/sdk";
 
 const HTTP_PORT = 9999;
 let stdioServerProcess: Subprocess | null = null;

@@ -1,6 +1,6 @@
 // packages/core/src/data/tool.ts
 import { z } from 'zod';
-import { CallTemplate, CallTemplateSchema } from '@utcp/core/data/call_template';
+import { CallTemplate, CallTemplateSchema } from './call_template';
 import { Serializer } from '../interfaces/serializer';
 
 // Define a recursive type for basic JSON values

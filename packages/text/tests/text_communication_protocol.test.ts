@@ -5,8 +5,8 @@ import path from 'path';
 // Import from package indices to trigger auto-registration
 import { TextCommunicationProtocol, TextCallTemplate } from "@utcp/text";
 import "@utcp/http"; // Needed for OpenAPI conversion
-import { IUtcpClient } from "@utcp/core/client/utcp_client";
-import { CallTemplateBase } from "@utcp/core";
+import { IUtcpClient } from "@utcp/sdk";
+import { CallTemplateBase } from "@utcp/sdk";
 
 const tempFiles: string[] = [];
 const mockClient = {} as IUtcpClient;

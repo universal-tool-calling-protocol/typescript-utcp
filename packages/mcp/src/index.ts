@@ -2,10 +2,9 @@
  * MCP Communication Protocol plugin for UTCP.
  */
 // packages/mcp/src/index.ts
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { CallTemplateSerializer } from '@utcp/core/data/call_template';
-import { McpCallTemplateSerializer } from '@utcp/mcp/mcp_call_template';
-import { McpCommunicationProtocol } from '@utcp/mcp/mcp_communication_protocol';
+import { CommunicationProtocol, CallTemplateSerializer } from '@utcp/sdk';
+import { McpCallTemplateSerializer } from './mcp_call_template';
+import { McpCommunicationProtocol } from './mcp_communication_protocol';
 
 /**
  * Registers the MCP protocol's CallTemplate serializer

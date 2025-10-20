@@ -1,5 +1,5 @@
 // packages/core/src/interfaces/variable_substitutor.ts
-import { UtcpClientConfig } from '@utcp/core/client/utcp_client_config';
+import { UtcpClientConfig } from '../client/utcp_client_config';
 
 /**
  * Defines the contract for variable substitution implementations.

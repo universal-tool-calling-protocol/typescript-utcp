@@ -18,13 +18,13 @@
  * defined by OpenAPI specifications, providing a bridge between OpenAPI and UTCP.
  */
 // packages/http/src/openapi_converter.ts
-import { Tool, JsonSchemaSchema, JsonSchema } from '@utcp/core/data/tool';
-import { UtcpManual, UtcpManualSerializer } from '@utcp/core/data/utcp_manual';
-import { Auth } from '@utcp/core/data/auth';
-import { ApiKeyAuth } from '@utcp/core/data/auth_implementations/api_key_auth';
-import { BasicAuth } from '@utcp/core/data/auth_implementations/basic_auth';
-import { OAuth2Auth } from '@utcp/core/data/auth_implementations/oauth2_auth';
-import { HttpCallTemplate } from '@utcp/http/http_call_template';
+import { Tool, JsonSchemaSchema, JsonSchema } from '@utcp/sdk';
+import { UtcpManual, UtcpManualSerializer } from '@utcp/sdk';
+import { Auth } from '@utcp/sdk';
+import { ApiKeyAuth } from '@utcp/sdk';
+import { BasicAuth } from '@utcp/sdk';
+import { OAuth2Auth } from '@utcp/sdk';
+import { HttpCallTemplate } from './http_call_template';
 
 interface OpenApiConverterOptions {
   specUrl?: string;

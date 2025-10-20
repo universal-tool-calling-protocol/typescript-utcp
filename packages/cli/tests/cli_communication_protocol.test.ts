@@ -2,7 +2,7 @@
 import { test, expect, describe, afterEach } from "bun:test";
 import { CliCommunicationProtocol } from '../src/cli_communication_protocol';
 import { CliCallTemplateSchema, CliCallTemplate } from '../src/cli_call_template';
-import { IUtcpClient } from '@utcp/core/client/utcp_client';
+import { IUtcpClient } from '@utcp/sdk';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 

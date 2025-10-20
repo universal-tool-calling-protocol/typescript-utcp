@@ -1,8 +1,8 @@
 // packages/text/src/text_call_template.ts
 import { z } from 'zod';
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { Auth, AuthSchema, AuthSerializer } from '@utcp/core/data/auth';
-import { Serializer } from '@utcp/core/interfaces/serializer';
+import { CallTemplate } from '@utcp/sdk';
+import { Auth, AuthSchema, AuthSerializer } from '@utcp/sdk';
+import { Serializer } from '@utcp/sdk';
 
 /**
  * REQUIRED

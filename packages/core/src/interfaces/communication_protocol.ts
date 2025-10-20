@@ -1,6 +1,6 @@
 // packages/core/src/interfaces/communication_protocol.ts
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { RegisterManualResult } from '@utcp/core/data/register_manual_result';
+import { CallTemplate } from '../data/call_template';
+import { RegisterManualResult } from '../data/register_manual_result';
 import { IUtcpClient } from './utcp_client_interface';
 
 /**

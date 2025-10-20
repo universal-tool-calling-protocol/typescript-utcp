@@ -1,5 +1,5 @@
 // packages/core/tests/http_manual_server.ts
-import { Tool } from "@utcp/core";
+import { Tool } from "@utcp/sdk";
 import { HttpCallTemplate } from "@utcp/http";
 
 const manual = {

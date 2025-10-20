@@ -1,7 +1,7 @@
 // packages/cli/src/cli_call_template.ts
 import { z } from 'zod';
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { Serializer } from '@utcp/core/interfaces/serializer';
+import { CallTemplate } from '@utcp/sdk';
+import { Serializer } from '@utcp/sdk';
 
 /**
  * REQUIRED

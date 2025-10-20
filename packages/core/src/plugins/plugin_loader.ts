@@ -1,26 +1,26 @@
 // Core Auth
-import { AuthSerializer } from '@utcp/core/data/auth';
+import { AuthSerializer } from '../data/auth';
 import { ApiKeyAuthSerializer } from '../data/auth_implementations/api_key_auth';
 import { BasicAuthSerializer } from '../data/auth_implementations/basic_auth';
 import { OAuth2AuthSerializer } from '../data/auth_implementations/oauth2_auth';
-import { setPluginInitializer } from '@utcp/core/interfaces/serializer';
+import { setPluginInitializer } from '../interfaces/serializer';
 
 // Core Variable Loaders
-import { VariableLoaderSerializer } from '@utcp/core/data/variable_loader';
-import { DotEnvVariableLoaderSerializer } from '@utcp/core/data/variable_loader_implementations/dotenv_variable_loader';
+import { VariableLoaderSerializer } from '../data/variable_loader';
+import { DotEnvVariableLoaderSerializer } from '../data/variable_loader_implementations/dotenv_variable_loader';
 
 // Core Tool Repository
-import { InMemConcurrentToolRepositorySerializer } from '@utcp/core/implementations/in_mem_concurrent_tool_repository';
-import { ConcurrentToolRepositoryConfigSerializer } from '@utcp/core/interfaces/concurrent_tool_repository';
+import { InMemConcurrentToolRepositorySerializer } from '../implementations/in_mem_concurrent_tool_repository';
+import { ConcurrentToolRepositoryConfigSerializer } from '../interfaces/concurrent_tool_repository';
 
 // Core Search Strategy
-import { TagSearchStrategyConfigSerializer } from '@utcp/core/implementations/tag_search_strategy';
-import { ToolSearchStrategyConfigSerializer } from '../interfaces';
+import { TagSearchStrategyConfigSerializer } from '../implementations/tag_search_strategy';
+import { ToolSearchStrategyConfigSerializer } from '../interfaces/tool_search_strategy';
 
 // Core Post Processors
-import { FilterDictPostProcessorSerializer } from '@utcp/core/implementations/post_processors/filter_dict_post_processor';
-import { LimitStringsPostProcessorSerializer } from '@utcp/core/implementations/post_processors/limit_strings_post_processor';
-import { ToolPostProcessorConfigSerializer } from '@utcp/core/interfaces/tool_post_processor';
+import { FilterDictPostProcessorSerializer } from '../implementations/post_processors/filter_dict_post_processor';
+import { LimitStringsPostProcessorSerializer } from '../implementations/post_processors/limit_strings_post_processor';
+import { ToolPostProcessorConfigSerializer } from '../interfaces/tool_post_processor';
 
 let corePluginsInitialized = false;
 let initializing = false;

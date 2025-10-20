@@ -1,6 +1,6 @@
 // packages/core/src/data/call_template.ts
 import { z } from 'zod';
-import { Auth, AuthSchema } from '@utcp/core/data/auth';
+import { Auth, AuthSchema } from './auth';
 import { Serializer } from '../interfaces/serializer';
 
 /**

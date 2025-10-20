@@ -1,6 +1,6 @@
 // packages/core/src/implementations/default_variable_substitutor.ts
-import { UtcpClientConfig } from '@utcp/core/client/utcp_client_config';
-import { VariableSubstitutor } from '@utcp/core/interfaces/variable_substitutor';
+import { UtcpClientConfig } from '../client/utcp_client_config';
+import { VariableSubstitutor } from '../interfaces/variable_substitutor';
 import { UtcpVariableNotFoundError } from '../exceptions/utcp_variable_not_found_error';
 
 /**

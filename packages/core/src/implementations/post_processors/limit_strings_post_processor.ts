@@ -1,10 +1,10 @@
 // packages/core/src/implementations/post_processors/limit_strings_post_processor.ts
 import { z } from 'zod';
-import { ToolPostProcessor } from '@utcp/core/interfaces/tool_post_processor';
-import { Tool } from '@utcp/core/data/tool';
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { IUtcpClient } from '@utcp/core/interfaces/utcp_client_interface';
-import { Serializer } from '@utcp/core/interfaces/serializer';
+import { ToolPostProcessor } from '../../interfaces/tool_post_processor';
+import { Tool } from '../../data/tool';
+import { CallTemplate } from '../../data/call_template';
+import { IUtcpClient } from '../../interfaces/utcp_client_interface';
+import { Serializer } from '../../interfaces/serializer';
 
 /**
  * Implements a tool post-processor that truncates string values within a tool's result.

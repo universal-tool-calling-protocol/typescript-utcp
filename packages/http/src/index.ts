@@ -3,15 +3,13 @@
  * Includes HTTP, Streamable HTTP, and SSE (Server-Sent Events) protocols.
  */
 // packages/http/src/index.ts
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { CallTemplateSerializer } from '@utcp/core/data/call_template';
-import { ensureCorePluginsInitialized } from '@utcp/core/plugins/plugin_loader';
-import { HttpCallTemplateSerializer } from '@utcp/http/http_call_template';
-import { StreamableHttpCallTemplateSerializer } from '@utcp/http/streamable_http_call_template';
-import { SseCallTemplateSerializer } from '@utcp/http/sse_call_template';
-import { HttpCommunicationProtocol } from '@utcp/http/http_communication_protocol';
-import { StreamableHttpCommunicationProtocol } from '@utcp/http/streamable_http_communication_protocol';
-import { SseCommunicationProtocol } from '@utcp/http/sse_communication_protocol';
+import { CommunicationProtocol, CallTemplateSerializer, ensureCorePluginsInitialized } from '@utcp/sdk';
+import { HttpCallTemplateSerializer } from './http_call_template';
+import { StreamableHttpCallTemplateSerializer } from './streamable_http_call_template';
+import { SseCallTemplateSerializer } from './sse_call_template';
+import { HttpCommunicationProtocol } from './http_communication_protocol';
+import { StreamableHttpCommunicationProtocol } from './streamable_http_communication_protocol';
+import { SseCommunicationProtocol } from './sse_communication_protocol';
 
 /**
  * Registers all HTTP-based protocol CallTemplate serializers

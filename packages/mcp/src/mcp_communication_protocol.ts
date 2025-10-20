@@ -4,14 +4,14 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport, StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import axios, { AxiosInstance } from 'axios';
 import { URLSearchParams } from 'url';
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { RegisterManualResult } from '@utcp/core/data/register_manual_result';
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { UtcpManualSchema } from '@utcp/core/data/utcp_manual';
-import { Tool, JsonSchema } from '@utcp/core/data/tool';
-import { OAuth2Auth } from '@utcp/core/data/auth_implementations/oauth2_auth';
-import { IUtcpClient } from '@utcp/core/interfaces/utcp_client_interface'; 
-import { McpCallTemplateSchema, McpHttpServer, McpServerConfig, McpStdioServer } from '@utcp/mcp/mcp_call_template';
+import { CommunicationProtocol } from '@utcp/sdk';
+import { RegisterManualResult } from '@utcp/sdk';
+import { CallTemplate } from '@utcp/sdk';
+import { UtcpManualSchema } from '@utcp/sdk';
+import { Tool, JsonSchema } from '@utcp/sdk';
+import { OAuth2Auth } from '@utcp/sdk';
+import { IUtcpClient } from '@utcp/sdk'; 
+import { McpCallTemplateSchema, McpHttpServer, McpServerConfig, McpStdioServer } from './mcp_call_template';
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
 // Define a simple type for the tool objects returned by MCP's listTools

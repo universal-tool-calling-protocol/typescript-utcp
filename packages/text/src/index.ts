@@ -2,11 +2,9 @@
  * Text Communication Protocol plugin for UTCP.
  */
 // packages/text/src/index.ts
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { CallTemplateSerializer } from '@utcp/core/data/call_template';
-import { ensureCorePluginsInitialized } from '@utcp/core/plugins/plugin_loader';
-import { TextCallTemplateSerializer } from '@utcp/text/text_call_template';
-import { TextCommunicationProtocol } from '@utcp/text/text_communication_protocol';
+import { CommunicationProtocol, CallTemplateSerializer, ensureCorePluginsInitialized } from '@utcp/sdk';
+import { TextCallTemplateSerializer } from './text_call_template';
+import { TextCommunicationProtocol } from './text_communication_protocol';
 
 /**
  * Registers the Text protocol's CallTemplate serializer

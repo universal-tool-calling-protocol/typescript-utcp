@@ -1,6 +1,6 @@
 // packages/core/src/interfaces/tool_search_strategy.ts
-import { Tool } from '@utcp/core/data/tool';
-import { ConcurrentToolRepository } from '@utcp/core/interfaces/concurrent_tool_repository';
+import { Tool } from '../data/tool';
+import { ConcurrentToolRepository } from './concurrent_tool_repository';
 import { Serializer } from './serializer';
 import z from 'zod';
 

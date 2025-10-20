@@ -1,9 +1,9 @@
 // packages/core/src/implementations/in_mem_concurrent_tool_repository.ts
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { Tool } from '@utcp/core/data/tool';
-import { UtcpManual } from '@utcp/core/data/utcp_manual';
-import { ConcurrentToolRepository } from '@utcp/core/interfaces/concurrent_tool_repository';
-import { Serializer } from '@utcp/core/interfaces/serializer';
+import { CallTemplate } from '../data/call_template';
+import { Tool } from '../data/tool';
+import { UtcpManual } from '../data/utcp_manual';
+import { ConcurrentToolRepository } from '../interfaces/concurrent_tool_repository';
+import { Serializer } from '../interfaces/serializer';
 import { z } from 'zod';
 
 /**

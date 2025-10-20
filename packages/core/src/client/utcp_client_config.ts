@@ -1,11 +1,11 @@
 // packages/core/src/client/utcp_client_config.ts
 import { z } from 'zod';
 import { ensureCorePluginsInitialized } from '../plugins/plugin_loader';
-import { CallTemplate, CallTemplateSchema, CallTemplateSerializer } from '@utcp/core/data/call_template';
+import { CallTemplate, CallTemplateSchema, CallTemplateSerializer } from '../data/call_template';
 import { ToolSearchStrategy, ToolSearchStrategyConfigSerializer } from '../interfaces/tool_search_strategy';
-import { VariableLoader, VariableLoaderSchema, VariableLoaderSerializer } from '@utcp/core/data/variable_loader';
-import { ConcurrentToolRepository, ConcurrentToolRepositoryConfigSerializer } from '@utcp/core/interfaces/concurrent_tool_repository';
-import { ToolPostProcessor, ToolPostProcessorConfigSerializer } from '@utcp/core/interfaces/tool_post_processor';
+import { VariableLoader, VariableLoaderSchema, VariableLoaderSerializer } from '../data/variable_loader';
+import { ConcurrentToolRepository, ConcurrentToolRepositoryConfigSerializer } from '../interfaces/concurrent_tool_repository';
+import { ToolPostProcessor, ToolPostProcessorConfigSerializer } from '../interfaces/tool_post_processor';
 import { Serializer } from '../interfaces/serializer';
 
 // Ensure core plugins are initialized before this module uses any serializers

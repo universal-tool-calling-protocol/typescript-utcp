@@ -1,7 +1,7 @@
 // packages/core/src/interfaces/concurrent_tool_repository.ts
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { Tool } from '@utcp/core/data/tool';
-import { UtcpManual } from '@utcp/core/data/utcp_manual';
+import { CallTemplate } from '../data/call_template';
+import { Tool } from '../data/tool';
+import { UtcpManual } from '../data/utcp_manual';
 import { Serializer } from './serializer';
 import z from 'zod';
 

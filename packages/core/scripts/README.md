@@ -49,9 +49,9 @@ This runs:
 
 When adding new packages that need version information:
 
-1. Import from `@utcp/core/data/utcp_manual`:
+1. Import from `@utcp/sdk`:
    ```typescript
-   import { UTCP_PACKAGE_VERSION } from '@utcp/core/data/utcp_manual';
+   import { UTCP_PACKAGE_VERSION } from '@utcp/sdk';
    ```
 
 2. Use it in your code:

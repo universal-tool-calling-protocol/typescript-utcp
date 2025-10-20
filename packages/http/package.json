@@ -1,6 +1,6 @@
 {
   "name": "@utcp/http",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "description": "HTTP utilities for UTCP",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -35,13 +35,14 @@
   ],
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "default": "./dist/index.js"
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.1",
+    "@utcp/sdk": "^1.0.4",
     "axios": "^1.11.0",
     "js-yaml": "^4.1.0"
   },

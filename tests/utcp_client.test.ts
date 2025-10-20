@@ -4,7 +4,7 @@ import { Subprocess } from "bun";
 import path from "path";
 import { writeFile, unlink } from "fs/promises";
 
-import { UtcpClient } from "@utcp/core";
+import { UtcpClient } from "@utcp/sdk";
 import { McpCallTemplate } from "@utcp/mcp";
 import { HttpCallTemplate } from "@utcp/http";
 import { TextCallTemplate } from "@utcp/text";

@@ -4,15 +4,15 @@
  * Handles Server-Sent Events based tool providers with streaming capabilities.
  */
 // packages/http/src/sse_communication_protocol.ts
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { RegisterManualResult } from '@utcp/core/data/register_manual_result';
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { UtcpManual, UtcpManualSerializer } from '@utcp/core/data/utcp_manual';
-import { ApiKeyAuth } from '@utcp/core/data/auth_implementations/api_key_auth';
-import { BasicAuth } from '@utcp/core/data/auth_implementations/basic_auth';
-import { OAuth2Auth } from '@utcp/core/data/auth_implementations/oauth2_auth';
-import { IUtcpClient } from '@utcp/core/interfaces/utcp_client_interface';
-import { SseCallTemplate } from '@utcp/http/sse_call_template';
+import { CommunicationProtocol } from '@utcp/sdk';
+import { RegisterManualResult } from '@utcp/sdk';
+import { CallTemplate } from '@utcp/sdk';
+import { UtcpManual, UtcpManualSerializer } from '@utcp/sdk';
+import { ApiKeyAuth } from '@utcp/sdk';
+import { BasicAuth } from '@utcp/sdk';
+import { OAuth2Auth } from '@utcp/sdk';
+import { IUtcpClient } from '@utcp/sdk';
+import { SseCallTemplate } from './sse_call_template';
 
 /**
  * REQUIRED

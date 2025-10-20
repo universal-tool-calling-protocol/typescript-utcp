@@ -1,6 +1,6 @@
 // packages/core/src/interfaces/tool_post_processor.ts
-import { Tool } from '@utcp/core/data/tool';
-import { CallTemplate } from '@utcp/core/data/call_template';
+import { Tool } from '../data/tool';
+import { CallTemplate } from '../data/call_template';
 import { IUtcpClient } from './utcp_client_interface';
 import { Serializer } from './serializer';
 import z from 'zod';

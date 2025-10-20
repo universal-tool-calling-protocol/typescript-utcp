@@ -12,8 +12,8 @@
     "moduleResolution": "bundler",
     "baseUrl": ".",
     "paths": {
-      "@utcp/core": ["packages/core/src"],
-      "@utcp/core/*": ["packages/core/src/*"],
+      "@utcp/sdk": ["packages/core/src"],
+      "@utcp/sdk/*": ["packages/core/src/*"],
       "@utcp/http": ["packages/http/src"],
       "@utcp/http/*": ["packages/http/src/*"],
       "@utcp/mcp": ["packages/mcp/src"],

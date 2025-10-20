@@ -4,8 +4,8 @@ import express, { Express } from 'express';
 import { Server } from 'http';
 // Import from package index to trigger auto-registration
 import { HttpCommunicationProtocol, HttpCallTemplate } from "@utcp/http";
-import { ApiKeyAuth, BasicAuth, OAuth2Auth } from "@utcp/core/data/auth";
-import { IUtcpClient } from "@utcp/core/client/utcp_client";
+import { ApiKeyAuth, BasicAuth, OAuth2Auth } from "@utcp/sdk";
+import { IUtcpClient } from "@utcp/sdk";
 
 // --- Test Server Setup ---
 let app: Express;

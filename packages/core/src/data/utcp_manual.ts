@@ -1,6 +1,6 @@
 // packages/core/src/data/utcp_manual.ts
 import { z } from 'zod';
-import { ToolSchema, Tool } from '@utcp/core/data/tool';
+import { ToolSchema, Tool } from './tool';
 import { Serializer } from '../interfaces/serializer';
 import { LIB_VERSION } from '../version';
 

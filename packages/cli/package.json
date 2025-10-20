@@ -1,6 +1,6 @@
 {
   "name": "@utcp/cli",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "description": "CLI utilities for UTCP",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -35,18 +35,14 @@
   ],
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js",
-      "types": "./dist/*.d.ts"
-    },
-    "./*": {
-      "import": "./dist/*.js",
-      "require": "./dist/*.js",
-      "types": "./dist/*.d.ts"
+      "default": "./dist/index.js"
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.1"
+    "@utcp/sdk": "^1.0.4"
   },
   "devDependencies": {
     "bun-types": "latest",

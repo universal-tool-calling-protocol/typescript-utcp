@@ -2,26 +2,25 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { parse as parseDotEnv } from 'dotenv';
-import { CallTemplate, CallTemplateSchema } from '@utcp/core/data/call_template';
-import { Tool } from '@utcp/core/data/tool';
-import { UtcpManualSchema } from '@utcp/core/data/utcp_manual';
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { RegisterManualResult } from '@utcp/core/data/register_manual_result';
-import { ConcurrentToolRepository } from '@utcp/core/interfaces/concurrent_tool_repository';
-import { ToolSearchStrategy } from '@utcp/core/interfaces/tool_search_strategy';
-import { VariableSubstitutor } from '@utcp/core/interfaces/variable_substitutor';
-import { ToolPostProcessor } from '@utcp/core/interfaces/tool_post_processor';
+import { CallTemplate, CallTemplateSchema } from '../data/call_template';
+import { Tool } from '../data/tool';
+import { UtcpManualSchema } from '../data/utcp_manual';
+import { CommunicationProtocol } from '../interfaces/communication_protocol';
+import { RegisterManualResult } from '../data/register_manual_result';
+import { ConcurrentToolRepository } from '../interfaces/concurrent_tool_repository';
+import { ToolSearchStrategy } from '../interfaces/tool_search_strategy';
+import { VariableSubstitutor } from '../interfaces/variable_substitutor';
+import { ToolPostProcessor } from '../interfaces/tool_post_processor';
 import {
   UtcpClientConfig,
   UtcpClientConfigSchema,
-} from '@utcp/core/client/utcp_client_config';
-import { DefaultVariableSubstitutor } from '@utcp/core/implementations/default_variable_substitutor';
-import { ensureCorePluginsInitialized } from '@utcp/core/plugins/plugin_loader';
+} from './utcp_client_config';
+import { DefaultVariableSubstitutor } from '../implementations/default_variable_substitutor';
+import { ensureCorePluginsInitialized } from '../plugins/plugin_loader';
 import { IUtcpClient } from '../interfaces/utcp_client_interface';
-import { ToolSearchStrategyConfigSerializer } from '@utcp/core/interfaces/tool_search_strategy';
-import { ToolPostProcessorConfigSerializer } from '@utcp/core/interfaces/tool_post_processor';
-import { ConcurrentToolRepositoryConfigSerializer } from '@utcp/core/interfaces/concurrent_tool_repository';
-
+import { ToolSearchStrategyConfigSerializer } from '../interfaces/tool_search_strategy';
+import { ToolPostProcessorConfigSerializer } from '../interfaces/tool_post_processor';
+import { ConcurrentToolRepositoryConfigSerializer } from '../interfaces/concurrent_tool_repository';
 
 /**
  * REQUIRED

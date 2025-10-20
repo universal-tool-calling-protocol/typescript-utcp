@@ -1,8 +1,7 @@
 // packages/cli/src/index.ts
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { CallTemplateSerializer } from '@utcp/core/data/call_template';
-import { CliCallTemplateSerializer } from '@utcp/cli/cli_call_template';
-import { CliCommunicationProtocol } from '@utcp/cli/cli_communication_protocol';
+import { CommunicationProtocol, CallTemplateSerializer } from '@utcp/sdk';
+import { CliCallTemplateSerializer } from './cli_call_template';
+import { CliCommunicationProtocol } from './cli_communication_protocol';
 
 /**
  * Registers the CLI protocol's CallTemplate serializer

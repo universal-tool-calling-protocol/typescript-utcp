@@ -1,8 +1,8 @@
 // packages/http/src/sse_call_template.ts
 import { z } from 'zod';
-import { Auth, AuthSchema } from '@utcp/core/data/auth';
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { Serializer } from '@utcp/core/interfaces/serializer';
+import { Auth, AuthSchema } from '@utcp/sdk';
+import { CallTemplate } from '@utcp/sdk';
+import { Serializer } from '@utcp/sdk';
 
 /**
  * REQUIRED

@@ -2,17 +2,17 @@
 import axios, { AxiosInstance, AxiosRequestConfig, Method } from 'axios';
 import * as yaml from 'js-yaml';
 import { URLSearchParams } from 'url';
-import { CommunicationProtocol } from '@utcp/core/interfaces/communication_protocol';
-import { RegisterManualResult } from '@utcp/core/data/register_manual_result';
-import { CallTemplate } from '@utcp/core/data/call_template';
-import { Tool } from '@utcp/core/data/tool';
-import { UtcpManualSchema } from '@utcp/core/data/utcp_manual';
-import { ApiKeyAuth } from '@utcp/core/data/auth_implementations/api_key_auth'; 
-import { BasicAuth } from '@utcp/core/data/auth_implementations/basic_auth';
-import { OAuth2Auth } from '@utcp/core/data/auth_implementations/oauth2_auth';
-import { IUtcpClient } from '@utcp/core/interfaces/utcp_client_interface'; 
-import { HttpCallTemplateSchema, HttpCallTemplate } from '@utcp/http/http_call_template';
-import { OpenApiConverter } from '@utcp/http/openapi_converter';
+import { CommunicationProtocol } from '@utcp/sdk';
+import { RegisterManualResult } from '@utcp/sdk';
+import { CallTemplate } from '@utcp/sdk';
+import { Tool } from '@utcp/sdk';
+import { UtcpManualSchema } from '@utcp/sdk';
+import { ApiKeyAuth } from '@utcp/sdk'; 
+import { BasicAuth } from '@utcp/sdk';
+import { OAuth2Auth } from '@utcp/sdk';
+import { IUtcpClient } from '@utcp/sdk'; 
+import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
+import { OpenApiConverter } from './openapi_converter';
 
 /**
  * HTTP communication protocol implementation for UTCP client.
