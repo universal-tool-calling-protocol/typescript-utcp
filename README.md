@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/github/license/universal-tool-calling-protocol/python-utcp)](https://github.com/universal-tool-calling-protocol/typescript-utcp/blob/main/LICENSE)
 [![CDTM S23](https://img.shields.io/badge/CDTM-S23-0b84f3)](https://cdtm.com/)
 
-**The Universal Tool Calling Protocol (UTCP) is a modern, flexible, and scalable standard for defining and interacting with tools across a wide variety of communication protocols. This repository contains the official TypeScript implementation, structured as a monorepo with a lean core and pluggable communication protocols.**
+**The Universal Tool Calling Protocol (UTCP) is a secure and scalable standard for defining and interacting with tools across a wide variety of communication protocols. This repository contains the official TypeScript implementation, structured as a monorepo with a lean core and pluggable communication protocols.**
 
 UTCP offers a unified framework for integrating disparate tools and services, making them accessible through a consistent and well-defined interface. This TypeScript SDK provides a comprehensive toolkit for developers to leverage the full power of the UTCP standard in their applications.
 
