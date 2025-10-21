@@ -79,7 +79,7 @@ protocol.registerCallable('myManual', async () => {
 });
 
 // Register a callable for tool execution
-protocol.registerCallable('myTool', async (args: any) => {
+protocol.registerCallable('myTool', async (...args: any[]) => {
   return { result: 'Success!' };
 });
 ```
