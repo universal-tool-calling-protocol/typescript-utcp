@@ -1,7 +1,7 @@
 {
-  "name": "@utcp/sdk",
-  "version": "1.0.5",
-  "description": "Universal Tool Calling Protocol SDK",
+  "name": "@utcp/direct-call",
+  "version": "1.0.0",
+  "description": "Direct callable functions plugin for UTCP",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -9,8 +9,8 @@
   "author": "UTCP Contributors",
   "repository": {
     "type": "git",
-    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp",
-    "directory": "packages/core"
+    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp.git",
+    "directory": "packages/direct-call"
   },
   "keywords": [
     "utcp",
@@ -19,7 +19,8 @@
     "api",
     "typescript",
     "tool calling",
-    "mcp",
+    "direct-call",
+    "callable",
     "agent",
     "ai",
     "llm"
@@ -28,12 +29,10 @@
     "access": "public"
   },
   "scripts": {
-    "prebuild": "rm -rf dist || rmdir /s /q dist || true",
-    "build": "tsc && node scripts/replace-version.js"
+    "build": "tsc"
   },
   "files": [
-    "dist",
-    "README.md"
+    "dist"
   ],
   "exports": {
     ".": {
@@ -44,11 +43,11 @@
     }
   },
   "dependencies": {
-    "dotenv": "^17.2.1",
-    "zod": "^3.23.8"
+    "@utcp/sdk": "^1.0.4"
   },
   "devDependencies": {
     "bun-types": "latest",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "@types/bun": "latest"
   }
 }

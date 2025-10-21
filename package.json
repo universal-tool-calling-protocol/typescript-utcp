@@ -16,8 +16,8 @@
     "zod": "^3.23.8"
   },
   "scripts": {
-    "clean": "bun tsc --build --clean packages/core packages/http packages/mcp packages/text packages/cli",
-    "build": "bun tsc --build packages/core packages/http packages/mcp packages/text packages/cli",
+    "clean": "bun tsc --build --clean packages/core packages/http packages/mcp packages/text packages/cli packages/direct-call",
+    "build": "bun tsc --build packages/core packages/http packages/mcp packages/text packages/cli packages/direct-call",
     "rebuild": "bun run clean && bun run build",
     "test": "bun test --config tsconfig.test.json",
     "version:patch": "node scripts/update-versions.js patch",
@@ -29,7 +29,8 @@
     "publish:http": "cd packages/http && npm publish",
     "publish:mcp": "cd packages/mcp && npm publish",
     "publish:cli": "cd packages/cli && npm publish",
-    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:http && bun run publish:mcp && bun run publish:cli"
+    "publish:direct-call": "cd packages/direct-call && npm publish",
+    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:http && bun run publish:mcp && bun run publish:cli && bun run publish:direct-call"
   },
   "workspaces": [
     "packages/*"
