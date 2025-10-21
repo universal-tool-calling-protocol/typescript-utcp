@@ -1,4 +1,4 @@
-// packages/http/tsconfig.json
+// packages/direct-call/tsconfig.json
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
