@@ -124,7 +124,15 @@ type LimitStringsPostProcessorConfig = z.infer<typeof LimitStringsPostProcessorC
 
 export class LimitStringsPostProcessorSerializer extends Serializer<LimitStringsPostProcessor> {
   toDict(obj: LimitStringsPostProcessor): { [key: string]: any } {
-    return obj.toDict();
+    const limitStringsConfig = obj.toDict()
+    return {
+      tool_post_processor_type: limitStringsConfig.tool_post_processor_type,
+      limit: limitStringsConfig.limit,
+      exclude_tools: limitStringsConfig.exclude_tools,
+      only_include_tools: limitStringsConfig.only_include_tools,
+      exclude_manuals: limitStringsConfig.exclude_manuals,
+      only_include_manuals: limitStringsConfig.only_include_manuals,
+    };
   }
 
   validateDict(data: { [key: string]: any }): LimitStringsPostProcessor {

@@ -186,7 +186,16 @@ type FilterDictPostProcessorConfig = z.infer<typeof FilterDictPostProcessorConfi
 
 export class FilterDictPostProcessorSerializer extends Serializer<FilterDictPostProcessor> {
   toDict(obj: FilterDictPostProcessor): { [key: string]: any } {
-    return obj.toDict();
+    const filterDictConfig = obj.toDict()
+    return {
+      tool_post_processor_type: filterDictConfig.tool_post_processor_type,
+      exclude_keys: filterDictConfig.exclude_keys,
+      only_include_keys: filterDictConfig.only_include_keys,
+      exclude_tools: filterDictConfig.exclude_tools,
+      only_include_tools: filterDictConfig.only_include_tools,
+      exclude_manuals: filterDictConfig.exclude_manuals,
+      only_include_manuals: filterDictConfig.only_include_manuals,
+    };
   }
 
   validateDict(data: { [key: string]: any }): FilterDictPostProcessor {

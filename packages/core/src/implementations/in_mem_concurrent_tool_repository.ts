@@ -183,7 +183,9 @@ export class InMemConcurrentToolRepository implements ConcurrentToolRepository {
 
 export class InMemConcurrentToolRepositorySerializer extends Serializer<InMemConcurrentToolRepository> {
   toDict(obj: InMemConcurrentToolRepository): { [key: string]: any } {
-    return obj.toDict();
+    return {
+      tool_repository_type: obj.tool_repository_type
+    }
   }
 
   validateDict(data: { [key: string]: any }): InMemConcurrentToolRepository {

@@ -11,8 +11,8 @@ import { Serializer } from '../interfaces/serializer';
  */
 export class TagSearchStrategy implements ToolSearchStrategy {
   public readonly tool_search_strategy_type: 'tag_and_description_word_match' = 'tag_and_description_word_match';
-  private readonly descriptionWeight: number;
-  private readonly tagWeight: number;
+  public readonly descriptionWeight: number;
+  public readonly tagWeight: number;
   private readonly _config: TagSearchStrategyConfig; 
 
    /**
@@ -126,7 +126,11 @@ export class TagSearchStrategy implements ToolSearchStrategy {
 
 export class TagSearchStrategyConfigSerializer extends Serializer<TagSearchStrategy> {
   toDict(obj: TagSearchStrategy): { [key: string]: any } {
-    return { ...obj };
+    return {
+      tool_search_strategy_type: obj.tool_search_strategy_type,
+      description_weight: obj.descriptionWeight,
+      tag_weight: obj.tagWeight
+    }
   }
 
   validateDict(data: { [key: string]: any }): TagSearchStrategy {
