@@ -91,7 +91,7 @@ export class TextCommunicationProtocol implements CommunicationProtocol {
       if (data && typeof data === 'object' && (data.openapi || data.swagger || data.paths)) {
         this._log_info('Detected OpenAPI specification. Converting to UTCP manual.');
         const converter = new OpenApiConverter(data, {
-          specUrl: textCallTemplate.file_path ? `file://${sourceInfo}` : 'direct-content://',
+          specUrl: textCallTemplate.content ? 'direct-content://' : `file://${sourceInfo}`,
           callTemplateName: textCallTemplate.name,
           authTools: textCallTemplate.auth_tools || undefined,
         });
