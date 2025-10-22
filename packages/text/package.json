@@ -1,6 +1,6 @@
 {
   "name": "@utcp/text",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Text utilities for UTCP",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -43,7 +43,9 @@
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.6"
+    "@utcp/sdk": "^1.0.8",
+    "@utcp/http": "^1.0.6",
+    "js-yaml": "^4.1.0"
   },
   "devDependencies": {
     "bun-types": "latest",
