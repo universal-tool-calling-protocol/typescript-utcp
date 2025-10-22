@@ -1,6 +1,6 @@
 {
   "name": "@utcp/text",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Text utilities for UTCP",
   "main": "dist/index.cjs",
   "module": "dist/index.js",

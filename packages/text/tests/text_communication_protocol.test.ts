@@ -6,7 +6,6 @@ import path from 'path';
 import { TextCommunicationProtocol, TextCallTemplate } from "@utcp/text";
 import "@utcp/http"; // Needed for OpenAPI conversion
 import { IUtcpClient } from "@utcp/sdk";
-import { CallTemplateBase } from "@utcp/sdk";
 
 const tempFiles: string[] = [];
 const mockClient = {} as IUtcpClient;
@@ -121,31 +120,125 @@ describe("TextCommunicationProtocol", () => {
       expect(result.errors.length).toBeGreaterThan(0);
       expect(result.errors[0]).toMatch(/JSON/i);
     });
+
+    test("should load a UTCP manual from direct JSON content", async () => {
+      const callTemplate: TextCallTemplate = {
+        name: "direct_content_manual",
+        call_template_type: 'text',
+        content: JSON.stringify(sampleUtcpManual)
+      };
+
+      const result = await protocol.registerManual(mockClient, callTemplate);
+
+      expect(result.success).toBe(true);
+      expect(result.errors).toEqual([]);
+      expect(result.manual.tools).toHaveLength(1);
+      expect(result.manual.tools[0]?.name).toBe("test.tool");
+    });
+
+    test("should load and convert an OpenAPI spec from direct YAML content", async () => {
+      const yaml = await import("js-yaml");
+      const yamlContent = yaml.dump(sampleOpenApiSpec);
+      const callTemplate: TextCallTemplate = {
+        name: "direct_openapi_manual",
+        call_template_type: 'text',
+        content: yamlContent
+      };
+
+      const result = await protocol.registerManual(mockClient, callTemplate);
+
+      expect(result.success).toBe(true);
+      expect(result.manual.tools).toHaveLength(1);
+      expect(result.manual.tools[0]?.name).toBe("getTest");
+    });
+
+    test("should prefer content over file_path when both are provided", async () => {
+      const filePath = await createTempFile("unused.json", JSON.stringify({ tools: [] }));
+      const callTemplate: TextCallTemplate = {
+        name: "content_precedence_manual",
+        call_template_type: 'text',
+        file_path: filePath,
+        content: JSON.stringify(sampleUtcpManual)
+      };
+
+      const result = await protocol.registerManual(mockClient, callTemplate);
+
+      expect(result.success).toBe(true);
+      expect(result.manual.tools).toHaveLength(1);
+      expect(result.manual.tools[0]?.name).toBe("test.tool");
+    });
+
+    test("should fail validation when neither file_path nor content is provided", async () => {
+      const callTemplate = {
+        name: "invalid_manual",
+        call_template_type: 'text'
+      };
+
+      const action = async () => await protocol.registerManual(mockClient, callTemplate);
+      await expect(action()).rejects.toThrow(/Either file_path or content must be provided/);
+    });
   });
 
   describe("callTool", () => {
     test("should return the raw content of the specified file", async () => {
       const fileContent = "This is the raw content of the file.";
       const filePath = await createTempFile("content.txt", fileContent);
-      const callTemplate: CallTemplateBase = {
+      const callTemplate: TextCallTemplate = {
         name: "file_content_tool",
         call_template_type: 'text',
         file_path: filePath
-      } as TextCallTemplate;
+      };
 
       const result = await protocol.callTool(mockClient, "any.tool", {}, callTemplate);
       expect(result).toBe(fileContent);
     });
 
     test("should throw an error if the file does not exist", async () => {
-      const callTemplate: CallTemplateBase = {
+      const callTemplate: TextCallTemplate = {
         name: "nonexistent_file_tool",
         call_template_type: 'text',
         file_path: "/path/to/nonexistent/file.txt"
-      } as TextCallTemplate;
+      };
 
       const action = async () => await protocol.callTool(mockClient, "any.tool", {}, callTemplate);
       await expect(action()).rejects.toThrow(/no such file or directory/);
+    });
+
+    test("should return direct content when content is provided", async () => {
+      const directContent = "This is direct content.";
+      const callTemplate: TextCallTemplate = {
+        name: "direct_content_tool",
+        call_template_type: 'text',
+        content: directContent
+      };
+
+      const result = await protocol.callTool(mockClient, "any.tool", {}, callTemplate);
+      expect(result).toBe(directContent);
+    });
+
+    test("should prefer content over file_path when both are provided", async () => {
+      const fileContent = "File content.";
+      const directContent = "Direct content wins.";
+      const filePath = await createTempFile("ignored.txt", fileContent);
+      const callTemplate: TextCallTemplate = {
+        name: "precedence_tool",
+        call_template_type: 'text',
+        file_path: filePath,
+        content: directContent
+      };
+
+      const result = await protocol.callTool(mockClient, "any.tool", {}, callTemplate);
+      expect(result).toBe(directContent);
+    });
+
+    test("should throw an error when neither file_path nor content is provided", async () => {
+      const callTemplate = {
+        name: "invalid_tool",
+        call_template_type: 'text'
+      };
+
+      const action = async () => await protocol.callTool(mockClient, "any.tool", {}, callTemplate);
+      await expect(action()).rejects.toThrow(/Either file_path or content must be provided/);
     });
   });
 
@@ -153,11 +246,11 @@ describe("TextCommunicationProtocol", () => {
     test("should yield the file content as a single chunk", async () => {
       const fileContent = JSON.stringify({ data: "stream content" });
       const filePath = await createTempFile("stream.json", fileContent);
-      const callTemplate: CallTemplateBase = {
+      const callTemplate: TextCallTemplate = {
         name: "streaming_file_tool",
         call_template_type: 'text',
         file_path: filePath
-      } as TextCallTemplate;
+      };
 
       const stream = protocol.callToolStreaming(mockClient, "any.tool", {}, callTemplate);
 

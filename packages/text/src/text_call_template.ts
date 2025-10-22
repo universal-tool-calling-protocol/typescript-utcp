@@ -6,20 +6,25 @@ import { Serializer } from '@utcp/sdk';
 
 /**
  * REQUIRED
- * Call template for text file-based manuals and tools.
+ * Call template for text-based manuals and tools.
  *
- * Reads UTCP manuals or tool definitions from local JSON/YAML files. Useful for
- * static tool configurations or environments where manuals are distributed as files.
+ * Supports both reading UTCP manuals or tool definitions from local JSON/YAML files
+ * or directly from string content. Useful for static tool configurations or environments
+ * where manuals are distributed as files or dynamically generated strings.
  *
  * Attributes:
- *     call_template_type: Always "text" for text file call templates.
- *     file_path: Path to the file containing the UTCP manual or tool definitions.
+ *     call_template_type: Always "text" for text call templates.
+ *     file_path: Path to the file containing the UTCP manual or tool definitions (optional if content is provided).
+ *     content: Direct string content of the UTCP manual or tool definitions (optional if file_path is provided).
  *     auth: Always None - text call templates don't support authentication for file access.
  *     auth_tools: Optional authentication to apply to generated tools from OpenAPI specs.
+ *
+ * Note: At least one of file_path or content must be provided. If both are provided, content takes precedence.
  */
 export interface TextCallTemplate extends CallTemplate {
   call_template_type: 'text';
-  file_path: string;
+  file_path?: string;
+  content?: string;
   auth?: undefined;
   auth_tools?: Auth | null;
 }
@@ -30,7 +35,8 @@ export interface TextCallTemplate extends CallTemplate {
 export const TextCallTemplateSchema: z.ZodType<TextCallTemplate> = z.object({
   name: z.string().optional(),
   call_template_type: z.literal('text'),
-  file_path: z.string().describe('The path to the file containing the UTCP manual or tool definitions.'),
+  file_path: z.string().optional().describe('The path to the file containing the UTCP manual or tool definitions.'),
+  content: z.string().optional().describe('Direct string content of the UTCP manual or tool definitions.'),
   auth: z.undefined().optional(),
   auth_tools: AuthSchema.nullable().optional().transform((val) => {
     if (val === null || val === undefined) return null;
@@ -39,7 +45,10 @@ export const TextCallTemplateSchema: z.ZodType<TextCallTemplate> = z.object({
     }
     return val as Auth;
   }).describe('Authentication to apply to generated tools from OpenAPI specs.'),
-}).strict() as z.ZodType<TextCallTemplate>;
+}).strict().refine(
+  (data) => data.file_path !== undefined || data.content !== undefined,
+  { message: 'Either file_path or content must be provided' }
+) as z.ZodType<TextCallTemplate>;
 
 /**
  * REQUIRED
@@ -55,6 +64,7 @@ export class TextCallTemplateSerializer extends Serializer<TextCallTemplate> {
       name: obj.name,
       call_template_type: obj.call_template_type,
       file_path: obj.file_path,
+      content: obj.content,
       auth: obj.auth,
       auth_tools: obj.auth_tools ? new AuthSerializer().toDict(obj.auth_tools) : null,
     };
