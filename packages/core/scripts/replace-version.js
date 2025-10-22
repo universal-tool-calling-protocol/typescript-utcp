@@ -18,15 +18,24 @@ const version = packageJson.version;
 
 console.log(`Replacing __LIB_VERSION__ with ${version}`);
 
-// Replace in the compiled version.js file
-const versionFilePath = join(__dirname, '..', 'dist', 'version.js');
-try {
-  let content = readFileSync(versionFilePath, 'utf-8');
-  content = content.replace(/__LIB_VERSION__/g, version);
-  writeFileSync(versionFilePath, content, 'utf-8');
-  console.log(`✓ Updated ${versionFilePath}`);
-} catch (error) {
-  console.error(`Error updating version file:`, error.message);
+// Replace in both ESM and CJS bundles
+const filesToUpdate = ['index.js', 'index.cjs'];
+let hasError = false;
+
+for (const file of filesToUpdate) {
+  const filePath = join(__dirname, '..', 'dist', file);
+  try {
+    let content = readFileSync(filePath, 'utf-8');
+    content = content.replace(/__LIB_VERSION__/g, version);
+    writeFileSync(filePath, content, 'utf-8');
+    console.log(`✓ Updated ${filePath}`);
+  } catch (error) {
+    console.error(`Error updating ${file}:`, error.message);
+    hasError = true;
+  }
+}
+
+if (hasError) {
   process.exit(1);
 }
 

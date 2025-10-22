@@ -1,8 +1,9 @@
 {
   "name": "@utcp/mcp",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "Model Context Protocol integration for UTCP",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
   "license": "MPL-2.0",
@@ -35,16 +36,16 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "require": "./dist/index.js",
+      "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsup"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.4",
-    "@utcp/sdk": "^1.0.4",
+    "@utcp/sdk": "^1.0.6",
     "axios": "^1.11.0"
   },
   "devDependencies": {

@@ -6,6 +6,7 @@
     "@types/js-yaml": "^4.0.9",
     "bun-types": "^1.2.22",
     "nock": "^14.0.10",
+    "tsup": "^8.5.0",
     "zod": "^3.25.76"
   },
   "peerDependencies": {
@@ -16,8 +17,14 @@
     "zod": "^3.23.8"
   },
   "scripts": {
-    "clean": "bun tsc --build --clean packages/core packages/http packages/mcp packages/text packages/cli",
-    "build": "bun tsc --build packages/core packages/http packages/mcp packages/text packages/cli",
+    "clean": "rm -rf packages/*/dist || rmdir /s /q packages\\*\\dist || true",
+    "build": "bun run build:core && bun run build:http && bun run build:mcp && bun run build:text && bun run build:cli && bun run build:direct-call",
+    "build:core": "cd packages/core && bun run build",
+    "build:http": "cd packages/http && bun run build",
+    "build:mcp": "cd packages/mcp && bun run build",
+    "build:text": "cd packages/text && bun run build",
+    "build:cli": "cd packages/cli && bun run build",
+    "build:direct-call": "cd packages/direct-call && bun run build",
     "rebuild": "bun run clean && bun run build",
     "test": "bun test --config tsconfig.test.json",
     "version:patch": "node scripts/update-versions.js patch",
@@ -29,7 +36,8 @@
     "publish:http": "cd packages/http && npm publish",
     "publish:mcp": "cd packages/mcp && npm publish",
     "publish:cli": "cd packages/cli && npm publish",
-    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:http && bun run publish:mcp && bun run publish:cli"
+    "publish:direct-call": "cd packages/direct-call && npm publish",
+    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:http && bun run publish:mcp && bun run publish:cli && bun run publish:direct-call"
   },
   "workspaces": [
     "packages/*"

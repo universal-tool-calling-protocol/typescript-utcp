@@ -49,7 +49,7 @@ function _registerCorePlugins(): void {
 }
 
 /**
- * Attempts to auto-register optional UTCP plugins (HTTP, MCP, Text, etc.)
+ * Attempts to auto-register optional UTCP plugins (HTTP, MCP, Text, Direct Call, CLI, etc.)
  * if they are available in the project. This is a best-effort approach that
  * silently ignores plugins that are not installed.
  */
@@ -82,6 +82,16 @@ function _tryRegisterOptionalPlugins(): void {
     }
   } catch (e) {
     // Text plugin not available, skip
+  }
+
+  // Try to register Direct Call plugin
+  try {
+    const directCallPlugin = require('@utcp/direct-call');
+    if (directCallPlugin && typeof directCallPlugin.register === 'function') {
+      directCallPlugin.register();
+    }
+  } catch (e) {
+    // Direct Call plugin not available, skip
   }
 
   // Try to register CLI plugin
