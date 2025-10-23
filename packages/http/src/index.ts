@@ -10,7 +10,6 @@ import { SseCallTemplateSerializer } from './sse_call_template';
 import { HttpCommunicationProtocol } from './http_communication_protocol';
 import { StreamableHttpCommunicationProtocol } from './streamable_http_communication_protocol';
 import { SseCommunicationProtocol } from './sse_communication_protocol';
-import { OpenApiConverter, OpenApiConverterOptions } from './openapi_converter';
 
 /**
  * Registers all HTTP-based protocol CallTemplate serializers
@@ -42,4 +41,5 @@ export * from './streamable_http_call_template';
 export * from './streamable_http_communication_protocol';
 export * from './sse_call_template';
 export * from './sse_communication_protocol';
-export { OpenApiConverter, OpenApiConverterOptions } from './openapi_converter';
+export { OpenApiConverter } from './openapi_converter';
+export type { OpenApiConverterOptions } from './openapi_converter';

@@ -11,7 +11,7 @@ The `@utcp/sdk` package provides the fundamental components and interfaces for t
 ### Core Components
 
 *   **UtcpClient**: The main client for interacting with the UTCP ecosystem
-    *   Automatic plugin registration for official protocols (HTTP, MCP, Text, CLI)
+    *   Plugin-based protocol support (HTTP, MCP, Text, File, CLI, etc.)
     *   Manual and tool registration/deregistration
     *   Tool search with name, tag, and description matching
     *   Tool execution across multiple protocols
@@ -47,14 +47,15 @@ bun add @utcp/sdk
 
 ### Basic Usage
 
-Plugins are **automatically registered** when you import the UtcpClient:
+**Important:** Plugins must be explicitly imported to register their protocols:
 
 ```typescript
 import { UtcpClient } from '@utcp/sdk';
+import '@utcp/http';  // Auto-registers HTTP protocol
 import { HttpCallTemplateSerializer } from '@utcp/http';
 
 async function main() {
-  // Create client - official plugins auto-register
+  // Create client
   const serializer = new HttpCallTemplateSerializer();
   const apiTemplate = serializer.validateDict({
     name: 'api_manual',
@@ -88,6 +89,7 @@ async function main() {
 
 ```typescript
 import { UtcpClient } from '@utcp/sdk';
+import '@utcp/dotenv-loader';  // Required for .env file support
 
 const client = await UtcpClient.create(process.cwd(), {
   load_variables_from: [
@@ -239,11 +241,47 @@ All lookups use the namespaced key: `{namespace}_VARIABLE_NAME`
 
 ## Plugin System
 
-### Automatic Registration
+### Available Plugins
 
-Official plugins (HTTP, MCP, Text, CLI) are automatically registered when you import `UtcpClient`. The plugin loader in `@utcp/sdk` tries to discover and register available plugins.
+UTCP provides several optional protocol plugins:
 
-### Manual Registration
+**Browser-Compatible:**
+- `@utcp/http` - HTTP/HTTPS requests with full authentication support
+- `@utcp/text` - Direct text/string content (inline UTCP manuals or OpenAPI specs)
+- `@utcp/direct-call` - Direct function calls
+
+**Node.js Only:**
+- `@utcp/file` - File system access for loading manuals from local files
+- `@utcp/mcp` - Model Context Protocol support
+- `@utcp/cli` - CLI command execution
+- `@utcp/dotenv-loader` - Load variables from .env files
+
+### Explicit Plugin Import
+
+Each plugin must be **explicitly imported** to register its protocol:
+
+```typescript
+// Browser application - only import browser-compatible plugins
+import { UtcpClient } from '@utcp/sdk';
+import '@utcp/http';
+import '@utcp/text';
+import '@utcp/direct-call';
+
+// Node.js application - can use all plugins
+import { UtcpClient } from '@utcp/sdk';
+import '@utcp/http';
+import '@utcp/mcp';
+import '@utcp/file';
+import '@utcp/dotenv-loader';
+```
+
+This explicit import approach ensures:
+- ✅ Browser bundles only include what you use
+- ✅ No Node.js dependencies in browser builds
+- ✅ Perfect tree-shaking for minimal bundle sizes
+- ✅ Clear, explicit dependencies
+
+### Custom Plugin Registration
 
 For custom or third-party plugins:
 

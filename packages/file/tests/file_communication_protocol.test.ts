@@ -5,7 +5,7 @@ import path from 'path';
 // Import from package indices to trigger auto-registration
 import { FileCommunicationProtocol, FileCallTemplate } from "@utcp/file";
 import "@utcp/http"; // Needed for OpenAPI conversion
-import { IUtcpClient } from "@utcp/sdk";
+import { IUtcpClient, ApiKeyAuth } from "@utcp/sdk";
 
 const tempFiles: string[] = [];
 const mockClient = {} as IUtcpClient;
@@ -145,9 +145,9 @@ describe("FileCommunicationProtocol", () => {
         auth_tools: {
           auth_type: 'api_key',
           var_name: 'X-API-Key',
-          api_key_value: '${API_KEY}',
-          in: 'header'
-        }
+          api_key: '${API_KEY}',
+          location: 'header'
+        } as ApiKeyAuth
       };
 
       const result = await protocol.registerManual(mockClient, callTemplate);

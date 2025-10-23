@@ -42,102 +42,32 @@ function _registerCorePlugins(): void {
 }
 
 /**
- * Attempts to auto-register optional UTCP plugins (HTTP, MCP, Text, File, Direct Call, CLI, DotEnv Loader, etc.)
- * if they are available in the project. This is a best-effort approach that
- * silently ignores plugins that are not installed.
- */
-function _tryRegisterOptionalPlugins(): void {
-  // Try to register HTTP plugin
-  try {
-    const httpPlugin = require('@utcp/http');
-    if (httpPlugin && typeof httpPlugin.register === 'function') {
-      httpPlugin.register();
-    }
-  } catch (e) {
-    // HTTP plugin not available, skip
-  }
-
-  // Try to register MCP plugin
-  try {
-    const mcpPlugin = require('@utcp/mcp');
-    if (mcpPlugin && typeof mcpPlugin.register === 'function') {
-      mcpPlugin.register();
-    }
-  } catch (e) {
-    // MCP plugin not available, skip
-  }
-
-  // Try to register Text plugin
-  try {
-    const textPlugin = require('@utcp/text');
-    if (textPlugin && typeof textPlugin.register === 'function') {
-      textPlugin.register();
-    }
-  } catch (e) {
-    // Text plugin not available, skip
-  }
-
-  // Try to register File plugin
-  try {
-    const filePlugin = require('@utcp/file');
-    if (filePlugin && typeof filePlugin.register === 'function') {
-      filePlugin.register();
-    }
-  } catch (e) {
-    // File plugin not available, skip
-  }
-
-  // Try to register Direct Call plugin
-  try {
-    const directCallPlugin = require('@utcp/direct-call');
-    if (directCallPlugin && typeof directCallPlugin.register === 'function') {
-      directCallPlugin.register();
-    }
-  } catch (e) {
-    // Direct Call plugin not available, skip
-  }
-
-  // Try to register CLI plugin
-  try {
-    const cliPlugin = require('@utcp/cli');
-    if (cliPlugin && typeof cliPlugin.register === 'function') {
-      cliPlugin.register();
-    }
-  } catch (e) {
-    // CLI plugin not available, skip
-  }
-
-  // Try to register DotEnv Loader plugin
-  try {
-    const dotenvLoaderPlugin = require('@utcp/dotenv-loader');
-    if (dotenvLoaderPlugin && typeof dotenvLoaderPlugin.register === 'function') {
-      dotenvLoaderPlugin.register();
-    }
-  } catch (e) {
-    // DotEnv Loader plugin not available, skip
-  }
-
-  // Try to register String plugin
-  try {
-    const stringPlugin = require('@utcp/string');
-    if (stringPlugin && typeof stringPlugin.register === 'function') {
-      stringPlugin.register();
-    }
-  } catch (e) {
-    // String plugin not available, skip
-  }
-}
-
-/**
- * Ensures that all core UTCP plugins (default repository, search strategy,
- * and post-processors) are registered with the plugin registry.
- * This function should be called once at application startup.
+ * Ensures that all core UTCP plugins (auth serializers, default repository, 
+ * search strategy, and post-processors) are registered with the plugin registry.
+ * 
+ * This function is called automatically when needed and should not be called manually.
+ * 
+ * Note: Optional plugins like HTTP, MCP, Text, File, etc. are NOT auto-registered.
+ * Users must explicitly import the plugins they need:
+ * 
+ * @example
+ * // Browser application
+ * import { UtcpClient } from '@utcp/sdk';
+ * import '@utcp/http';     // Auto-registers HTTP protocol
+ * import '@utcp/text';     // Auto-registers text content protocol
+ * 
+ * @example
+ * // Node.js application
+ * import { UtcpClient } from '@utcp/sdk';
+ * import '@utcp/http';
+ * import '@utcp/mcp';
+ * import '@utcp/file';
+ * import '@utcp/dotenv-loader';
  */
 export function ensureCorePluginsInitialized(): void {
   if (!corePluginsInitialized && !initializing) {
     initializing = true;
     _registerCorePlugins();
-    _tryRegisterOptionalPlugins();
     corePluginsInitialized = true;
     initializing = false;
   }
