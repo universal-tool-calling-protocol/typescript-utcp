@@ -2,13 +2,13 @@
 
 /**
  * Update versions across all packages in the monorepo
- * Usage: node scripts/update-versions.js [major|minor|patch] [version]
+ * Usage: node scripts/update-versions.js [major|minor|patch|set] [version]
  * 
  * Examples:
- *   node scripts/update-versions.js patch          # Bump patch version (1.0.0 -> 1.0.1)
- *   node scripts/update-versions.js minor          # Bump minor version (1.0.0 -> 1.1.0)
- *   node scripts/update-versions.js major          # Bump major version (1.0.0 -> 2.0.0)
- *   node scripts/update-versions.js set 1.2.3      # Set specific version
+ *   node scripts/update-versions.js patch          # Bump each package patch version independently
+ *   node scripts/update-versions.js minor          # Bump each package minor version independently
+ *   node scripts/update-versions.js major          # Bump each package major version independently
+ *   node scripts/update-versions.js set 1.2.3      # Set all packages to same specific version
  */
 
 import fs from 'fs';
@@ -22,7 +22,7 @@ const PACKAGES_DIR = path.resolve(__dirname, '../packages');
 const ROOT_DIR = path.resolve(__dirname, '..');
 
 // Package directories
-const PACKAGES = ['core', 'http', 'mcp', 'text', 'cli', 'direct-call'];
+const PACKAGES = ['core', 'http', 'mcp', 'text', 'file', 'cli', 'direct-call', 'dotenv-loader'];
 
 /**
  * Parse semantic version string
@@ -70,7 +70,7 @@ function bumpVersion(currentVersion, bumpType) {
 /**
  * Update package.json version
  */
-function updatePackageVersion(packagePath, newVersion) {
+function updatePackageVersion(packagePath, newVersion, bumpType = null) {
   const packageJsonPath = path.join(packagePath, 'package.json');
   
   if (!fs.existsSync(packageJsonPath)) {
@@ -81,11 +81,14 @@ function updatePackageVersion(packagePath, newVersion) {
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
   const oldVersion = packageJson.version;
   
-  packageJson.version = newVersion;
+  // If bumpType is provided, calculate new version from current version
+  const finalVersion = bumpType ? bumpVersion(oldVersion, bumpType) : newVersion;
+  
+  packageJson.version = finalVersion;
   
   fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n');
   
-  return { name: packageJson.name, oldVersion, newVersion };
+  return { name: packageJson.name, oldVersion, newVersion: finalVersion };
 }
 
 /**
@@ -139,22 +142,16 @@ function main() {
   if (args.length === 0) {
     console.error('❌ Usage: node scripts/update-versions.js [major|minor|patch|set] [version?]');
     console.error('\nExamples:');
-    console.error('  node scripts/update-versions.js patch');
-    console.error('  node scripts/update-versions.js minor');
-    console.error('  node scripts/update-versions.js major');
-    console.error('  node scripts/update-versions.js set 1.2.3');
+    console.error('  node scripts/update-versions.js patch    # Bump each package by one patch');
+    console.error('  node scripts/update-versions.js minor    # Bump each package by one minor');
+    console.error('  node scripts/update-versions.js major    # Bump each package by one major');
+    console.error('  node scripts/update-versions.js set 1.2.3 # Set all packages to same version');
     process.exit(1);
   }
   
   const command = args[0];
   let newVersion;
-  
-  // Get current version from core package
-  const corePackagePath = path.join(PACKAGES_DIR, 'core', 'package.json');
-  const corePackage = JSON.parse(fs.readFileSync(corePackagePath, 'utf8'));
-  const currentVersion = corePackage.version;
-  
-  console.log(`📦 Current version: ${currentVersion}\n`);
+  let bumpType = null;
   
   if (command === 'set') {
     if (args.length < 2) {
@@ -171,15 +168,16 @@ function main() {
       console.error(`❌ ${error.message}`);
       process.exit(1);
     }
+    
+    console.log(`🎯 Setting all packages to version: ${newVersion}\n`);
   } else if (['major', 'minor', 'patch'].includes(command)) {
-    newVersion = bumpVersion(currentVersion, command);
+    bumpType = command;
+    console.log(`🎯 Bumping each package by one ${command} version\n`);
   } else {
     console.error(`❌ Unknown command: ${command}`);
     console.error('   Valid commands: major, minor, patch, set');
     process.exit(1);
   }
-  
-  console.log(`🎯 New version: ${newVersion}\n`);
   
   // Update all package versions
   const updates = [];
@@ -188,7 +186,8 @@ function main() {
   
   for (const pkg of PACKAGES) {
     const packagePath = path.join(PACKAGES_DIR, pkg);
-    const result = updatePackageVersion(packagePath, newVersion);
+    // Pass bumpType for incremental bumps, or newVersion for set command
+    const result = updatePackageVersion(packagePath, newVersion, bumpType);
     
     if (result) {
       updates.push(result);
@@ -207,12 +206,11 @@ function main() {
   
   console.log('\n✨ Version update complete!');
   console.log(`\n📋 Summary:`);
-  console.log(`   Old version: ${currentVersion}`);
-  console.log(`   New version: ${newVersion}`);
   console.log(`   Updated ${updates.length} packages`);
+  updates.forEach(u => console.log(`   - ${u.name}: ${u.oldVersion} -> ${u.newVersion}`));
   console.log('\n💡 Next steps:');
   console.log('   1. Review the changes: git diff');
-  console.log('   2. Commit the changes: git commit -am "chore: bump version to ${newVersion}"');
+  console.log('   2. Commit the changes: git commit -am "chore: bump package versions"');
   console.log('   3. Build the packages: bun run build');
   console.log('   4. Publish: bun run publish:all');
 }
