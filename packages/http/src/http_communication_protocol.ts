@@ -1,7 +1,6 @@
 // packages/http/src/http_communication_protocol.ts
 import axios, { AxiosInstance, AxiosRequestConfig, Method } from 'axios';
 import * as yaml from 'js-yaml';
-import { URLSearchParams } from 'url';
 import { CommunicationProtocol } from '@utcp/sdk';
 import { RegisterManualResult } from '@utcp/sdk';
 import { CallTemplate } from '@utcp/sdk';

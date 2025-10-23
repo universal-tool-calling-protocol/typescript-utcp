@@ -18,13 +18,15 @@
   },
   "scripts": {
     "clean": "rm -rf packages/*/dist || rmdir /s /q packages\\*\\dist || true",
-    "build": "bun run build:core && bun run build:http && bun run build:mcp && bun run build:text && bun run build:cli && bun run build:direct-call",
+    "build": "bun run build:core && bun run build:http && bun run build:mcp && bun run build:text && bun run build:file && bun run build:cli && bun run build:direct-call && bun run build:dotenv-loader",
     "build:core": "cd packages/core && bun run build",
     "build:http": "cd packages/http && bun run build",
     "build:mcp": "cd packages/mcp && bun run build",
     "build:text": "cd packages/text && bun run build",
+    "build:file": "cd packages/file && bun run build",
     "build:cli": "cd packages/cli && bun run build",
     "build:direct-call": "cd packages/direct-call && bun run build",
+    "build:dotenv-loader": "cd packages/dotenv-loader && bun run build",
     "rebuild": "bun run clean && bun run build",
     "test": "bun test --config tsconfig.test.json",
     "version:patch": "node scripts/update-versions.js patch",
@@ -33,11 +35,13 @@
     "version:set": "node scripts/update-versions.js set",
     "publish:core": "cd packages/core && npm publish",
     "publish:text": "cd packages/text && npm publish",
+    "publish:file": "cd packages/file && npm publish",
     "publish:http": "cd packages/http && npm publish",
     "publish:mcp": "cd packages/mcp && npm publish",
     "publish:cli": "cd packages/cli && npm publish",
     "publish:direct-call": "cd packages/direct-call && npm publish",
-    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:http && bun run publish:mcp && bun run publish:cli && bun run publish:direct-call"
+    "publish:dotenv-loader": "cd packages/dotenv-loader && npm publish",
+    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:file && bun run publish:http && bun run publish:mcp && bun run publish:cli && bun run publish:direct-call && bun run publish:dotenv-loader"
   },
   "workspaces": [
     "packages/*"

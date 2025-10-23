@@ -5,10 +5,6 @@ import { BasicAuthSerializer } from '../data/auth_implementations/basic_auth';
 import { OAuth2AuthSerializer } from '../data/auth_implementations/oauth2_auth';
 import { setPluginInitializer } from '../interfaces/serializer';
 
-// Core Variable Loaders
-import { VariableLoaderSerializer } from '../data/variable_loader';
-import { DotEnvVariableLoaderSerializer } from '../data/variable_loader_implementations/dotenv_variable_loader';
-
 // Core Tool Repository
 import { InMemConcurrentToolRepositorySerializer } from '../implementations/in_mem_concurrent_tool_repository';
 import { ConcurrentToolRepositoryConfigSerializer } from '../interfaces/concurrent_tool_repository';
@@ -34,9 +30,6 @@ function _registerCorePlugins(): void {
   AuthSerializer.registerAuth('basic', new BasicAuthSerializer());
   AuthSerializer.registerAuth('oauth2', new OAuth2AuthSerializer());
 
-  // Register Core Variable Loader Serializers
-  VariableLoaderSerializer.registerVariableLoader('dotenv', new DotEnvVariableLoaderSerializer());
-
   // Register Tool Repository Serializers
   ConcurrentToolRepositoryConfigSerializer.registerRepository('in_memory', new InMemConcurrentToolRepositorySerializer());
 
@@ -49,7 +42,7 @@ function _registerCorePlugins(): void {
 }
 
 /**
- * Attempts to auto-register optional UTCP plugins (HTTP, MCP, Text, Direct Call, CLI, etc.)
+ * Attempts to auto-register optional UTCP plugins (HTTP, MCP, Text, File, Direct Call, CLI, DotEnv Loader, etc.)
  * if they are available in the project. This is a best-effort approach that
  * silently ignores plugins that are not installed.
  */
@@ -84,6 +77,16 @@ function _tryRegisterOptionalPlugins(): void {
     // Text plugin not available, skip
   }
 
+  // Try to register File plugin
+  try {
+    const filePlugin = require('@utcp/file');
+    if (filePlugin && typeof filePlugin.register === 'function') {
+      filePlugin.register();
+    }
+  } catch (e) {
+    // File plugin not available, skip
+  }
+
   // Try to register Direct Call plugin
   try {
     const directCallPlugin = require('@utcp/direct-call');
@@ -102,6 +105,26 @@ function _tryRegisterOptionalPlugins(): void {
     }
   } catch (e) {
     // CLI plugin not available, skip
+  }
+
+  // Try to register DotEnv Loader plugin
+  try {
+    const dotenvLoaderPlugin = require('@utcp/dotenv-loader');
+    if (dotenvLoaderPlugin && typeof dotenvLoaderPlugin.register === 'function') {
+      dotenvLoaderPlugin.register();
+    }
+  } catch (e) {
+    // DotEnv Loader plugin not available, skip
+  }
+
+  // Try to register String plugin
+  try {
+    const stringPlugin = require('@utcp/string');
+    if (stringPlugin && typeof stringPlugin.register === 'function') {
+      stringPlugin.register();
+    }
+  } catch (e) {
+    // String plugin not available, skip
   }
 }
 

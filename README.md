@@ -14,7 +14,7 @@ UTCP offers a unified framework for integrating disparate tools and services, ma
 *   **Automatic Plugin Registration**: The official plugins are automatically discovered and registered when you import the core client—no manual setup required. For other plugins, you will need to register them manually.
 *   **Scalability**: Designed to handle a large number of tools and providers without compromising performance.
 *   **Extensibility**: A pluggable architecture allows developers to easily add new communication protocols, tool storage mechanisms, and search strategies without modifying the core library.
-*   **Interoperability**: With a growing ecosystem of protocol plugins—including HTTP, MCP, Text, and CLI—UTCP can integrate with almost any existing service or infrastructure.
+*   **Interoperability**: With a growing ecosystem of protocol plugins—including HTTP, MCP, Text, File, and CLI—UTCP can integrate with almost any existing service or infrastructure.
 *   **Type Safety**: Built on well-defined TypeScript interfaces and runtime validation powered by Zod, making it robust and developer-friendly.
 *   **Secure Variable Management**: Namespace-isolated variables prevent leakage between manuals, with support for environment variables and .env files.
 
@@ -28,10 +28,13 @@ Install UTCP packages from npm:
 
 ```bash
 # Install core SDK and desired protocol plugins
-npm install @utcp/sdk @utcp/http @utcp/mcp @utcp/text
+npm install @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file
+
+# Optional: Add dotenv variable loader for Node.js
+npm install @utcp/dotenv-loader
 
 # Or using bun
-bun add @utcp/sdk @utcp/http @utcp/mcp @utcp/text
+bun add @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file
 ```
 
 ### For Development
@@ -98,13 +101,13 @@ main().catch(console.error);
 import { UtcpClient } from '@utcp/sdk';
 import { HttpCallTemplateSerializer } from '@utcp/http';
 import { McpCallTemplateSerializer } from '@utcp/mcp';
-import { TextCallTemplateSerializer } from '@utcp/text';
+import { FileCallTemplateSerializer } from '@utcp/file';
 
 async function main() {
   // Create serializers for each protocol
   const httpSerializer = new HttpCallTemplateSerializer();
   const mcpSerializer = new McpCallTemplateSerializer();
-  const textSerializer = new TextCallTemplateSerializer();
+  const fileSerializer = new FileCallTemplateSerializer();
 
   // Validate and create call templates
   const httpTemplate = httpSerializer.validateDict({
@@ -132,9 +135,9 @@ async function main() {
     }
   });
 
-  const textTemplate = textSerializer.validateDict({
+  const fileTemplate = fileSerializer.validateDict({
     name: 'local_tools',
-    call_template_type: 'text',
+    call_template_type: 'file',
     file_path: './config/tools.json'
   });
 
@@ -152,7 +155,7 @@ async function main() {
     manual_call_templates: [
       httpTemplate,  // HTTP API
       mcpTemplate,   // MCP Server
-      textTemplate   // Local file-based tools
+      fileTemplate   // Local file-based tools
     ]
   });
 
@@ -383,15 +386,34 @@ const mcpTemplate = serializer.validateDict({
 
 ### Text Protocol
 
-Load tools from local JSON/YAML files or OpenAPI specs:
+Handle direct text/string content (browser-compatible):
 
 ```typescript
 import { TextCallTemplateSerializer } from '@utcp/text';
 
 const serializer = new TextCallTemplateSerializer();
 const textTemplate = serializer.validateDict({
-  name: 'local_tools',
+  name: 'inline_tools',
   call_template_type: 'text',
+  content: JSON.stringify({
+    tools: [
+      // UTCP manual or OpenAPI spec as string
+    ]
+  })
+});
+```
+
+### File Protocol
+
+Load tools from local JSON/YAML files or OpenAPI specs (Node.js only):
+
+```typescript
+import { FileCallTemplateSerializer } from '@utcp/file';
+
+const serializer = new FileCallTemplateSerializer();
+const fileTemplate = serializer.validateDict({
+  name: 'local_tools',
+  call_template_type: 'file',
   file_path: './config/tools.json'
   // Supports: .json, .yaml, .yml, OpenAPI specs
 });
@@ -425,7 +447,10 @@ typescript-utcp/
 │   ├── core/          # Core SDK with UtcpClient and interfaces
 │   ├── http/          # HTTP protocol plugin
 │   ├── mcp/           # MCP protocol plugin
-│   ├── text/          # Text/file protocol plugin
+│   ├── text/          # Text/string content protocol plugin (browser-compatible)
+│   ├── file/          # File system protocol plugin (Node.js only)
+│   ├── dotenv-loader/ # DotEnv variable loader plugin (Node.js only)
+│   ├── direct-call/   # Direct call protocol plugin
 │   └── cli/           # CLI protocol plugin
 ├── tests/             # End-to-end integration tests
 └── README.md
@@ -435,7 +460,10 @@ Each package is independently published to npm:
 - `@utcp/sdk` - Core SDK library (required)
 - `@utcp/http` - HTTP protocol support
 - `@utcp/mcp` - MCP protocol support
-- `@utcp/text` - File-based tools
+- `@utcp/text` - Direct text/string content (browser-compatible)
+- `@utcp/file` - File system operations (Node.js only)
+- `@utcp/dotenv-loader` - DotEnv variable loader (Node.js only)
+- `@utcp/direct-call` - Direct function call protocol
 - `@utcp/cli` - Command-line tools
 
 ## Development & Testing

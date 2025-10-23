@@ -51,9 +51,38 @@
         "typescript": "^5.0.0",
       },
     },
+    "packages/dotenv-loader": {
+      "name": "@utcp/dotenv-loader",
+      "version": "1.0.0",
+      "dependencies": {
+        "dotenv": "^17.2.1",
+        "zod": "^3.23.8",
+      },
+      "devDependencies": {
+        "bun-types": "latest",
+        "typescript": "^5.0.0",
+      },
+      "peerDependencies": {
+        "@utcp/sdk": "^1.0.8",
+      },
+    },
+    "packages/file": {
+      "name": "@utcp/file",
+      "version": "1.0.0",
+      "dependencies": {
+        "@utcp/http": "^1.0.7",
+        "@utcp/sdk": "^1.0.8",
+        "js-yaml": "^4.1.0",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "bun-types": "latest",
+        "typescript": "^5.0.0",
+      },
+    },
     "packages/http": {
       "name": "@utcp/http",
-      "version": "1.0.6",
+      "version": "1.0.8",
       "dependencies": {
         "@utcp/sdk": "^1.0.6",
         "axios": "^1.11.0",
@@ -82,14 +111,13 @@
     },
     "packages/text": {
       "name": "@utcp/text",
-      "version": "1.0.8",
+      "version": "1.0.11",
       "dependencies": {
-        "@utcp/http": "^1.0.6",
+        "@utcp/http": "^1.0.8",
         "@utcp/sdk": "^1.0.8",
         "js-yaml": "^4.1.0",
       },
       "devDependencies": {
-        "@types/bun": "latest",
         "bun-types": "latest",
         "typescript": "^5.0.0",
       },
@@ -230,6 +258,10 @@
     "@utcp/cli": ["@utcp/cli@workspace:packages/cli"],
 
     "@utcp/direct-call": ["@utcp/direct-call@workspace:packages/direct-call"],
+
+    "@utcp/dotenv-loader": ["@utcp/dotenv-loader@workspace:packages/dotenv-loader"],
+
+    "@utcp/file": ["@utcp/file@workspace:packages/file"],
 
     "@utcp/http": ["@utcp/http@workspace:packages/http"],
 
@@ -592,6 +624,10 @@
     "@utcp/cli/bun-types": ["bun-types@1.3.0", "", { "dependencies": { "@types/node": "*" }, "peerDependencies": { "@types/react": "^19" } }, "sha512-u8X0thhx+yJ0KmkxuEo9HAtdfgCBaM/aI9K90VQcQioAmkVp3SG3FkwWGibUFz3WdXAdcsqOcbU40lK7tbHdkQ=="],
 
     "@utcp/direct-call/bun-types": ["bun-types@1.3.0", "", { "dependencies": { "@types/node": "*" }, "peerDependencies": { "@types/react": "^19" } }, "sha512-u8X0thhx+yJ0KmkxuEo9HAtdfgCBaM/aI9K90VQcQioAmkVp3SG3FkwWGibUFz3WdXAdcsqOcbU40lK7tbHdkQ=="],
+
+    "@utcp/dotenv-loader/bun-types": ["bun-types@1.3.1", "", { "dependencies": { "@types/node": "*" }, "peerDependencies": { "@types/react": "^19" } }, "sha512-NMrcy7smratanWJ2mMXdpatalovtxVggkj11bScuWuiOoXTiKIu2eVS1/7qbyI/4yHedtsn175n4Sm4JcdHLXw=="],
+
+    "@utcp/file/bun-types": ["bun-types@1.3.1", "", { "dependencies": { "@types/node": "*" }, "peerDependencies": { "@types/react": "^19" } }, "sha512-NMrcy7smratanWJ2mMXdpatalovtxVggkj11bScuWuiOoXTiKIu2eVS1/7qbyI/4yHedtsn175n4Sm4JcdHLXw=="],
 
     "@utcp/http/bun-types": ["bun-types@1.3.1", "", { "dependencies": { "@types/node": "*" }, "peerDependencies": { "@types/react": "^19" } }, "sha512-NMrcy7smratanWJ2mMXdpatalovtxVggkj11bScuWuiOoXTiKIu2eVS1/7qbyI/4yHedtsn175n4Sm4JcdHLXw=="],
 

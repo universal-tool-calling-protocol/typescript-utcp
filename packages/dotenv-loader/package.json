@@ -1,7 +1,7 @@
 {
-  "name": "@utcp/direct-call",
-  "version": "1.0.11",
-  "description": "Direct callable functions plugin for UTCP",
+  "name": "@utcp/dotenv-loader",
+  "version": "1.0.0",
+  "description": "DotEnv Variable Loader plugin for UTCP",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,29 +11,25 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp.git",
-    "directory": "packages/direct-call"
+    "directory": "packages/dotenv-loader"
   },
   "keywords": [
     "utcp",
-    "universal-tool-calling-protocol",
-    "tools",
-    "api",
-    "typescript",
-    "tool calling",
-    "direct-call",
-    "callable",
-    "agent",
-    "ai",
-    "llm"
+    "dotenv",
+    "environment",
+    "variables",
+    "configuration"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
+    "prebuild": "rm -rf dist || rmdir /s /q dist || true",
     "build": "tsup"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "exports": {
     ".": {
@@ -44,11 +40,14 @@
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.11"
+    "dotenv": "^17.2.1",
+    "zod": "^3.23.8"
+  },
+  "peerDependencies": {
+    "@utcp/sdk": "^1.0.8"
   },
   "devDependencies": {
     "bun-types": "latest",
-    "typescript": "^5.0.0",
-    "@types/bun": "latest"
+    "typescript": "^5.0.0"
   }
 }

@@ -1,7 +1,6 @@
-// packages/core/src/data/variable_loader_implementations/dotenv_variable_loader.ts
+// packages/dotenv-loader/src/dotenv_variable_loader.ts
 import { z } from 'zod';
-import { VariableLoader } from '../variable_loader';
-import { Serializer } from '../../interfaces/serializer';
+import { VariableLoader, Serializer } from '@utcp/sdk';
 import { promises as fs } from 'fs';
 import { parse as parseDotEnv } from 'dotenv';
 import * as path from 'path';

@@ -26,7 +26,10 @@ import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { HttpCallTemplate } from './http_call_template';
 
-interface OpenApiConverterOptions {
+/**
+ * Options for the OpenAPI converter.
+ */
+export interface OpenApiConverterOptions {
   specUrl?: string;
   callTemplateName?: string;
   authTools?: Auth;
@@ -220,7 +223,7 @@ export class OpenApiConverter {
     const { inputs, headerFields, bodyField } = this._extractInputs(path, operation);
     const outputs = this._extractOutputs(operation);
     const auth = this._extractAuth(operation);
-    const fullUrl = `${baseUrl.replace(/\/$/, '')}/${path.lstrip('/')}`;
+    const fullUrl = `${baseUrl.replace(/\/$/, '')}/${path.replace(/^\/+/, '')}`;
 
     const callTemplate: HttpCallTemplate = {
       name: this.call_template_name,
@@ -594,20 +597,4 @@ export class OpenApiConverter {
 
     return undefined;
   }
-}
-
-declare global {
-  interface String {
-    lstrip(chars: string): string;
-  }
-}
-
-if (!String.prototype.lstrip) {
-  String.prototype.lstrip = function (this: string, chars: string): string {
-    let result = this;
-    while (result.startsWith(chars)) {
-      result = result.substring(chars.length);
-    }
-    return result;
-  };
 }

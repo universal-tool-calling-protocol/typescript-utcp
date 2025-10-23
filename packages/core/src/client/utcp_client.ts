@@ -1,7 +1,4 @@
 // packages/core/src/client/utcp_client.ts
-import { promises as fs } from 'fs';
-import * as path from 'path';
-import { parse as parseDotEnv } from 'dotenv';
 import { CallTemplate, CallTemplateSchema } from '../data/call_template';
 import { Tool } from '../data/tool';
 import { UtcpManualSchema } from '../data/utcp_manual';
@@ -14,6 +11,7 @@ import { ToolPostProcessor } from '../interfaces/tool_post_processor';
 import {
   UtcpClientConfig,
   UtcpClientConfigSchema,
+  UtcpClientConfigSerializer,
 } from './utcp_client_config';
 import { DefaultVariableSubstitutor } from '../implementations/default_variable_substitutor';
 import { ensureCorePluginsInitialized } from '../plugins/plugin_loader';
@@ -60,16 +58,14 @@ export class UtcpClient implements IUtcpClient {
    */
   public static async create(
     root_dir: string = process.cwd(),
-    config: Partial<UtcpClientConfig> | string = {}
+    config: UtcpClientConfig | null = null
   ): Promise<UtcpClient> {
     // Ensure core plugins are initialized before parsing config
     ensureCorePluginsInitialized();
 
     let loadedConfig: Partial<UtcpClientConfig>;
-    if (typeof config === 'string') {
-        const configPath = path.resolve(root_dir, config);
-        const configFileContent = await fs.readFile(configPath, 'utf-8');
-        loadedConfig = JSON.parse(configFileContent);
+    if (config === null) {
+        loadedConfig = new UtcpClientConfigSerializer().validateDict({});
     } else {
         loadedConfig = config;
     }
@@ -345,27 +341,6 @@ export class UtcpClient implements IUtcpClient {
     }
 
     return result.data as T;
-  }
-
-  /**
-   * Loads variables from sources defined in the client configuration.
-   */
-  private async loadVariables(): Promise<void> {
-    for (const varLoader of this.config.load_variables_from || []) {
-        const parsedLoader = varLoader;
-        if (parsedLoader.variable_loader_type === 'dotenv') {
-            try {
-                const envFilePath = path.resolve(this.root_dir || process.cwd(), parsedLoader.env_file_path);
-                const envContent = await fs.readFile(envFilePath, 'utf-8');
-                const envVars = parseDotEnv(envContent);
-                // Merge loaded variables, giving precedence to existing config.variables
-                this.config.variables = { ...envVars, ...this.config.variables };
-                console.log(`Loaded variables from .env file: ${envFilePath}`);
-            } catch (e: any) {
-                console.warn(`Could not load .env file from '${parsedLoader.env_file_path}': ${e.message}`);
-            }
-        }
-    }
   }
 
   /**
