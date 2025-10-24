@@ -1,7 +1,7 @@
 {
   "name": "@utcp/text",
-  "version": "1.0.8",
-  "description": "Text utilities for UTCP",
+  "version": "1.0.12",
+  "description": "Text content protocol for UTCP - handles direct text content (browser-compatible)",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -15,15 +15,10 @@
   },
   "keywords": [
     "utcp",
-    "universal-tool-calling-protocol",
-    "tools",
-    "api",
-    "typescript",
-    "tool calling",
     "text",
-    "agent",
-    "ai",
-    "llm"
+    "content",
+    "browser",
+    "tool calling"
   ],
   "publishConfig": {
     "access": "public"
@@ -43,11 +38,12 @@
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.6"
+    "@utcp/http": "^1.0.13",
+    "@utcp/sdk": "^1.0.15",
+    "js-yaml": "^4.1.0"
   },
   "devDependencies": {
     "bun-types": "latest",
-    "typescript": "^5.0.0",
-    "@types/bun": "latest"
+    "typescript": "^5.0.0"
   }
 }

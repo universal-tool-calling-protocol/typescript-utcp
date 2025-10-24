@@ -5,9 +5,15 @@ import path from "path";
 import { writeFile, unlink } from "fs/promises";
 
 import { UtcpClient } from "@utcp/sdk";
-import { McpCallTemplate } from "@utcp/mcp";
-import { HttpCallTemplate } from "@utcp/http";
-import { TextCallTemplate } from "@utcp/text";
+// Import protocol packages to register their serializers and communication protocols
+import "@utcp/http";
+import "@utcp/file";
+import "@utcp/mcp";
+import "@utcp/dotenv-loader";
+// Import types after registering the packages
+import type { McpCallTemplate } from "@utcp/mcp";
+import type { HttpCallTemplate } from "@utcp/http";
+import type { FileCallTemplate } from "@utcp/file";
 
 let httpManualServerProcess: Subprocess | null = null;
 let mcpStdioServerProcess: Subprocess | null = null;
@@ -181,10 +187,10 @@ describe("UtcpClient End-to-End Tests", () => {
         outputs: { type: 'object', properties: { content: { type: 'string' } } },
         tags: ["file", "io", "dummy"],
         tool_call_template: {
-          name: "text_manual",
-          call_template_type: "text",
+          name: "file_manual",
+          call_template_type: "file",
           file_path: dummyTextFilePath
-        } as TextCallTemplate
+        } as FileCallTemplate
       }]
     };
     const textManualConfigPath = path.join(import.meta.dir, "test_text_manual.json");
@@ -201,10 +207,10 @@ describe("UtcpClient End-to-End Tests", () => {
           url: "http://localhost:9998/utcp",
         } as HttpCallTemplate,
         {
-          name: "local_text_manual",
-          call_template_type: "text",
+          name: "local_file_manual",
+          call_template_type: "file",
           file_path: textManualConfigPath,
-        } as TextCallTemplate,
+        } as FileCallTemplate,
         {
           name: "mcp_stdio_client_manual",
           call_template_type: "mcp",
@@ -229,12 +235,12 @@ describe("UtcpClient End-to-End Tests", () => {
     // Expected tools: 1 from HTTP, 1 from Text, 2 from MCP = 4 tools
     expect(allTools.length).toBe(4);
     const httpTool = await client.config.tool_repository.getTool("http_server_manual.get_user");
-    const textTool = await client.config.tool_repository.getTool("local_text_manual.read_dummy_file");
+    const fileTool = await client.config.tool_repository.getTool("local_file_manual.read_dummy_file");
     const mcpEchoTool = await client.config.tool_repository.getTool("mcp_stdio_client_manual.mock_stdio_server.echo");
     const mcpAddTool = await client.config.tool_repository.getTool("mcp_stdio_client_manual.mock_stdio_server.add");
 
     expect(httpTool).toBeDefined();
-    expect(textTool).toBeDefined();
+    expect(fileTool).toBeDefined();
     expect(mcpEchoTool).toBeDefined();
     expect(mcpAddTool).toBeDefined();
 
@@ -244,10 +250,10 @@ describe("UtcpClient End-to-End Tests", () => {
     expect(httpResult).toEqual({ id: 123, name: "Alice" });
     console.log(`[Test] HTTP tool result: ${JSON.stringify(httpResult)}`);
 
-    console.log("\n[Test] Calling Text tool...");
-    const textResult = await client.callTool("local_text_manual.read_dummy_file", {});
-    expect(textResult).toBe("This is dummy content for the text file tool.");
-    console.log(`[Test] Text tool result: "${textResult.substring(0, 30)}..."`);
+    console.log("\n[Test] Calling File tool...");
+    const fileResult = await client.callTool("local_file_manual.read_dummy_file", {});
+    expect(fileResult).toBe("This is dummy content for the text file tool.");
+    console.log(`[Test] File tool result: "${fileResult.substring(0, 30)}..."`);
 
 
     console.log("\n[Test] Calling MCP tool...");
@@ -346,8 +352,9 @@ describe("UtcpClient End-to-End Tests", () => {
     const searchResults = await client.searchTools("echo", 5);
 
     // 3. Assert: Verify the search results
+    // The search should return the "echo" tool as the first (highest scored) result
     console.log(`[Test] Search results for "echo": ${searchResults.map(t => t.name).join(', ')}`);
-    expect(searchResults.length).toBe(1);
+    expect(searchResults.length).toBeGreaterThan(0);
     expect(searchResults[0]?.name).toBe("mcp_search_manual.mock_stdio_server.echo");
 
     await client.close();

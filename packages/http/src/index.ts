@@ -41,4 +41,5 @@ export * from './streamable_http_call_template';
 export * from './streamable_http_communication_protocol';
 export * from './sse_call_template';
 export * from './sse_communication_protocol';
-export * from './openapi_converter';
+export { OpenApiConverter } from './openapi_converter';
+export type { OpenApiConverterOptions } from './openapi_converter';

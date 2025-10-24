@@ -36,7 +36,7 @@ export class DefaultVariableSubstitutor implements VariableSubstitutor {
     // --- Search Hierarchy ---
 
     // 1. Check config.variables (highest precedence)
-    if (config.variables && config.variables[effectiveKey]) {
+    if (config.variables && effectiveKey in config.variables) {
       return config.variables[effectiveKey];
     }
 
@@ -75,6 +75,11 @@ export class DefaultVariableSubstitutor implements VariableSubstitutor {
   public async substitute<T>(obj: T, config: UtcpClientConfig, namespace?: string): Promise<T> {
     if (namespace && !/^[a-zA-Z0-9_]+$/.test(namespace)) {
       throw new Error(`Variable namespace '${namespace}' contains invalid characters. Only alphanumeric characters and underscores are allowed.`);
+    }
+
+    const objString = JSON.stringify(obj);
+    if (objString && objString.includes('$ref')) {
+      return obj;
     }
 
     if (typeof obj === 'string') {
@@ -147,8 +152,9 @@ export class DefaultVariableSubstitutor implements VariableSubstitutor {
         const varNameInTemplate = match[1] || match[2];
         
         // Apply Python SDK's double underscore namespacing:
+        // Replaces underscores in namespace with double underscores, then adds single underscore before variable
         const effectiveNamespace = namespace ? namespace.replace(/_/g, '__') : undefined;
-        const prefixedVarName = effectiveNamespace ? `${effectiveNamespace}__${varNameInTemplate}` : varNameInTemplate;
+        const prefixedVarName = effectiveNamespace ? `${effectiveNamespace}_${varNameInTemplate}` : varNameInTemplate;
         
         variables.push(prefixedVarName);
       }

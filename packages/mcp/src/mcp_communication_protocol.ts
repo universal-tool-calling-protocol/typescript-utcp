@@ -3,7 +3,6 @@ import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport, StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import axios, { AxiosInstance } from 'axios';
-import { URLSearchParams } from 'url';
 import { CommunicationProtocol } from '@utcp/sdk';
 import { RegisterManualResult } from '@utcp/sdk';
 import { CallTemplate } from '@utcp/sdk';

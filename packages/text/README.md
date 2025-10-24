@@ -1,127 +1,118 @@
-# @utcp/text: Text File Communication Protocol Plugin for UTCP
+# @utcp/text
 
-The `@utcp/text` package provides a straightforward communication protocol for the Universal Tool Calling Protocol (UTCP) client to interact with local text files. It's primarily used for loading static UTCP Manuals or OpenAPI specifications directly from local JSON or YAML files, without needing a network request.
+Text Content Communication Protocol plugin for the Universal Tool Calling Protocol (UTCP).
 
-## Features
+## Overview
 
-*   **Text `CallTemplate`**: Defines the configuration for file-based tool definitions (`TextCallTemplate`), specifying the `file_path` to the local manual or spec. Authentication is explicitly `null` as file access typically relies on local permissions.
-*   **`TextCommunicationProtocol`**: Implements the `CommunicationProtocol` interface for file-based interactions:
-    *   **Tool Discovery**: Reads and parses local JSON or YAML files. It can directly interpret UTCP Manuals or automatically convert OpenAPI (v2/v3) specifications into UTCP `Tool` definitions (by utilizing the `OpenApiConverter` from `@utcp/http`).
-    *   **Tool Execution**: When a tool associated with a `TextCallTemplate` is "called", the protocol simply returns the raw content of the configured `file_path` as a string. This is useful for retrieving static data, configuration snippets, or even full documentation embedded as a tool.
-    *   **Stateless**: This protocol does not maintain any persistent connections or external resources, making it very lightweight.
-    *   **Path Resolution**: Resolves relative file paths using the `UtcpClient`'s configured root directory (`_rootPath`), ensuring flexibility in project structure.
+This plugin provides support for loading UTCP manuals and tool definitions from direct text/string content. Unlike `@utcp/file` which reads from files, this plugin is **browser-compatible** and works in any JavaScript environment.
 
 ## Installation
 
 ```bash
-bun add @utcp/text @utcp/sdk
-
-# Or using npm
-npm install @utcp/text @utcp/sdk
+npm install @utcp/text
 ```
-
-Note: `@utcp/sdk` is a peer dependency. `@utcp/http` and `js-yaml` dependencies are included automatically for OpenAPI conversion and YAML parsing.
 
 ## Usage
 
-The Text plugin registers automatically when you import it—no manual registration needed. Simply import from `@utcp/text` to enable text file support.
+The plugin automatically registers itself when imported:
 
 ```typescript
-// From your application's entry point
-
+import '@utcp/text';
 import { UtcpClient } from '@utcp/sdk';
-import { TextCallTemplateSerializer } from '@utcp/text';
-import * as path from 'path';
-import * as fs from 'fs/promises'; // For creating dummy files
 
-async function main() {
-  // Create a dummy UTCP manual file for demonstration
-  const manualContent = {
-    "utcp_version": "1.0.0",
-    "manual_version": "1.0.0",
-    "tools": [
-      {
-        "name": "read_static_data",
-        "description": "Reads static data from a local file.",
-        "inputs": {},
-        "outputs": { "type": "string", "description": "The content of the file." },
-        "tags": ["file", "static"],
-        "tool_call_template": {
-          "name": "static_file_reader",
-          "call_template_type": "text",
-          "file_path": "./config/static_data.txt" // The file path for the tool's content
-        }
-      },
-      {
-        "name": "describe_project",
-        "description": "Provides a description of the project from a local markdown file.",
-        "inputs": {},
-        "outputs": { "type": "string" },
-        "tags": ["documentation"],
-        "tool_call_template": {
-          "name": "project_readme_reader",
-          "call_template_type": "text",
-          "file_path": "./README.md" // Example: reads the project's README
-        }
-      }
-    ]
-  };
-  const configDirPath = path.resolve(process.cwd(), './config');
-  await fs.mkdir(configDirPath, { recursive: true });
-
-  const dummyManualPath = path.resolve(configDirPath, './my_local_manual.json');
-  await fs.writeFile(dummyManualPath, JSON.stringify(manualContent, null, 2));
-
-  const staticDataPath = path.resolve(configDirPath, './static_data.txt');
-  await fs.writeFile(staticDataPath, 'Hello from UTCP Text Plugin static data!');
-
-  // Define a CallTemplate to load the local UTCP manual from the 'config' directory
-  const serializer = new TextCallTemplateSerializer();
-  const textCallTemplate = serializer.validateDict({
-    name: 'local_manual_loader',
-    call_template_type: 'text',
-    file_path: './config/my_local_manual.json', // Path relative to client's root_path
-  });
-
-  const client = await UtcpClient.create(process.cwd(), {
-    manual_call_templates: [textCallTemplate] // Register the text manual at client startup
-  });
-
-  console.log('Text Plugin active. Searching for tools...');
-
-  // Example: Call 'read_static_data' tool. This will return the content of 'static_data.txt'.
-  try {
-    const staticDataReaderTool = await client.searchTools('read static data');
-    if (staticDataReaderTool.length > 0) {
-      const result = await client.callTool(staticDataReaderTool.name, {});
-      console.log('Result from "read_static_data" tool:', result);
+const utcpManualContent = JSON.stringify({
+  tools: [
+    {
+      name: 'my_tool',
+      description: 'A sample tool',
+      inputs: { type: 'object', properties: {} },
+      outputs: { type: 'object', properties: {} }
     }
-  } catch (error) {
-    console.error('Error calling "read_static_data" tool:', error);
-  }
+  ]
+});
 
-  // Example: Call 'describe_project' tool. This will return the content of the project's README.md.
-  try {
-    const projectDescTool = await client.searchTools('project description');
-    if (projectDescTool.length > 0) {
-      const result = await client.callTool(projectDescTool.name, {});
-      console.log('Result from "describe_project" tool (first 100 chars):', String(result).substring(0, 100) + '...');
-    }
-  } catch (error) {
-    console.error('Error calling "describe_project" tool:', error);
-  } finally {
-    // Clean up dummy files
-    await fs.unlink(dummyManualPath);
-    await fs.unlink(staticDataPath);
-    await fs.rmdir(configDirPath); // Remove the config directory
-  }
-
-  await client.close(); // No-op for text protocol, but good practice
-}
-
-main().catch(console.error);
+const client = await UtcpClient.create();
+await client.registerCallTemplate({
+  call_template_type: 'text',
+  name: 'my-manual',
+  content: utcpManualContent
+});
 ```
 
-## Development
+## Features
 
-Refer to the root `README.md` for monorepo development and testing instructions.
+- **Browser-Compatible**: No file system dependencies
+- **Multiple Formats**: Supports both JSON and YAML content
+- **OpenAPI Conversion**: Automatically converts OpenAPI specs to UTCP manuals
+- **Type-Safe**: Full TypeScript support with Zod validation
+
+## Text Call Template
+
+The text call template accepts the following configuration:
+
+- `call_template_type`: Must be set to `'text'`
+- `name`: Unique identifier for this manual
+- `content`: String content containing the UTCP manual or OpenAPI spec (required)
+- `auth_tools`: Optional authentication to apply to tools from OpenAPI specs
+
+## Example: OpenAPI Spec
+
+```typescript
+import '@utcp/text';
+import { UtcpClient } from '@utcp/sdk';
+
+const openApiSpec = `
+openapi: 3.0.0
+info:
+  title: My API
+  version: 1.0.0
+paths:
+  /users:
+    get:
+      summary: Get users
+      responses:
+        '200':
+          description: Success
+`;
+
+const client = await UtcpClient.create();
+await client.registerCallTemplate({
+  call_template_type: 'text',
+  name: 'my-api',
+  content: openApiSpec
+});
+```
+
+## Browser Usage
+
+Perfect for web applications:
+
+```typescript
+import '@utcp/text';
+import { UtcpClient } from '@utcp/sdk';
+
+// Load from API or inline
+const response = await fetch('/api/utcp-manual');
+const manualContent = await response.text();
+
+const client = await UtcpClient.create();
+await client.registerCallTemplate({
+  call_template_type: 'text',
+  name: 'remote-manual',
+  content: manualContent
+});
+```
+
+## Comparison with @utcp/file
+
+| Feature | @utcp/text | @utcp/file |
+|---------|-------------|-----------|
+| Browser compatible | ✅ Yes | ❌ No |
+| Node.js compatible | ✅ Yes | ✅ Yes |
+| File system access | ❌ No | ✅ Yes |
+| Direct content | ✅ Yes | ❌ No |
+| Use case | Web apps, inline content | Server-side file reading |
+
+## License
+
+MPL-2.0

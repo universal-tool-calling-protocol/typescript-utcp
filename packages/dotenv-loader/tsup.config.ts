@@ -13,5 +13,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   outDir: 'dist',
-  external: ['@utcp/sdk', '@utcp/http', 'js-yaml'],
+  external: ['@utcp/sdk', 'dotenv', 'zod'],
 });

@@ -1,7 +1,7 @@
 {
-  "name": "@utcp/cli",
-  "version": "1.0.12",
-  "description": "CLI utilities for UTCP",
+  "name": "@utcp/file",
+  "version": "1.0.1",
+  "description": "File system protocol for UTCP - reads UTCP manuals from local files (Node.js only)",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,7 +11,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp.git",
-    "directory": "packages/cli"
+    "directory": "packages/file"
   },
   "keywords": [
     "utcp",
@@ -20,7 +20,7 @@
     "api",
     "typescript",
     "tool calling",
-    "cli",
+    "file",
     "agent",
     "ai",
     "llm"
@@ -43,7 +43,9 @@
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.15"
+    "@utcp/sdk": "^1.0.15",
+    "@utcp/http": "^1.0.13",
+    "js-yaml": "^4.1.0"
   },
   "devDependencies": {
     "bun-types": "latest",

@@ -1,0 +1,137 @@
+# @utcp/file: File System Communication Protocol Plugin for UTCP
+
+The `@utcp/file` package provides a straightforward communication protocol for the Universal Tool Calling Protocol (UTCP) client to interact with local files. It's primarily used for loading static UTCP Manuals or OpenAPI specifications directly from local JSON or YAML files, without needing a network request. **Node.js only** - requires file system access.
+
+## Features
+
+*   **File `CallTemplate`**: Defines the configuration for file-based tool definitions (`FileCallTemplate`), specifying the `file_path` to the local manual or spec. Authentication is explicitly `undefined` as file access typically relies on local permissions.
+*   **`FileCommunicationProtocol`**: Implements the `CommunicationProtocol` interface for file-based interactions:
+    *   **Tool Discovery**: Reads and parses local JSON or YAML files. It can directly interpret UTCP Manuals or automatically convert OpenAPI (v2/v3) specifications into UTCP `Tool` definitions (by utilizing the `OpenApiConverter` from `@utcp/http`).
+    *   **Tool Execution**: When a tool associated with a `FileCallTemplate` is "called", the protocol simply returns the raw content of the configured `file_path` as a string. This is useful for retrieving static data, configuration snippets, or even full documentation embedded as a tool.
+    *   **Stateless**: This protocol does not maintain any persistent connections or external resources, making it very lightweight.
+    *   **Path Resolution**: Resolves relative file paths using the `UtcpClient`'s configured root directory (`_rootPath`), ensuring flexibility in project structure.
+
+## Installation
+
+```bash
+bun add @utcp/file @utcp/sdk
+
+# Or using npm
+npm install @utcp/file @utcp/sdk
+```
+
+Note: `@utcp/sdk` is a peer dependency. `@utcp/http` and `js-yaml` dependencies are included automatically for OpenAPI conversion and YAML parsing.
+
+## Usage
+
+The File plugin registers automatically when you import it—no manual registration needed. Simply import from `@utcp/file` to enable file system support.
+
+```typescript
+// From your application's entry point
+
+import { UtcpClient } from '@utcp/sdk';
+import { FileCallTemplateSerializer } from '@utcp/file';
+import * as path from 'path';
+import * as fs from 'fs/promises'; // For creating dummy files
+
+async function main() {
+  // Create a dummy UTCP manual file for demonstration
+  const manualContent = {
+    "utcp_version": "1.0.0",
+    "manual_version": "1.0.0",
+    "tools": [
+      {
+        "name": "read_static_data",
+        "description": "Reads static data from a local file.",
+        "inputs": {},
+        "outputs": { "type": "string", "description": "The content of the file." },
+        "tags": ["file", "static"],
+        "tool_call_template": {
+          "name": "static_file_reader",
+          "call_template_type": "file",
+          "file_path": "./config/static_data.txt" // The file path for the tool's content
+        }
+      },
+      {
+        "name": "describe_project",
+        "description": "Provides a description of the project from a local markdown file.",
+        "inputs": {},
+        "outputs": { "type": "string" },
+        "tags": ["documentation"],
+        "tool_call_template": {
+          "name": "project_readme_reader",
+          "call_template_type": "file",
+          "file_path": "./README.md" // Example: reads the project's README
+        }
+      }
+    ]
+  };
+  const configDirPath = path.resolve(process.cwd(), './config');
+  await fs.mkdir(configDirPath, { recursive: true });
+
+  const dummyManualPath = path.resolve(configDirPath, './my_local_manual.json');
+  await fs.writeFile(dummyManualPath, JSON.stringify(manualContent, null, 2));
+
+  const staticDataPath = path.resolve(configDirPath, './static_data.txt');
+  await fs.writeFile(staticDataPath, 'Hello from UTCP File Plugin static data!');
+
+  // Define a CallTemplate to load the local UTCP manual from the 'config' directory
+  const serializer = new FileCallTemplateSerializer();
+  const fileCallTemplate = serializer.validateDict({
+    name: 'local_manual_loader',
+    call_template_type: 'file',
+    file_path: './config/my_local_manual.json', // Path relative to client's root_path
+  });
+
+  const client = await UtcpClient.create(process.cwd(), {
+    manual_call_templates: [fileCallTemplate] // Register the file manual at client startup
+  });
+
+  console.log('File Plugin active. Searching for tools...');
+
+  // Example: Call 'read_static_data' tool. This will return the content of 'static_data.txt'.
+  try {
+    const staticDataReaderTool = await client.searchTools('read static data');
+    if (staticDataReaderTool.length > 0) {
+      const result = await client.callTool(staticDataReaderTool.name, {});
+      console.log('Result from "read_static_data" tool:', result);
+    }
+  } catch (error) {
+    console.error('Error calling "read_static_data" tool:', error);
+  }
+
+  // Example: Call 'describe_project' tool. This will return the content of the project's README.md.
+  try {
+    const projectDescTool = await client.searchTools('project description');
+    if (projectDescTool.length > 0) {
+      const result = await client.callTool(projectDescTool.name, {});
+      console.log('Result from "describe_project" tool (first 100 chars):', String(result).substring(0, 100) + '...');
+    }
+  } catch (error) {
+    console.error('Error calling "describe_project" tool:', error);
+  } finally {
+    // Clean up dummy files
+    await fs.unlink(dummyManualPath);
+    await fs.unlink(staticDataPath);
+    await fs.rmdir(configDirPath); // Remove the config directory
+  }
+
+  await client.close(); // No-op for file protocol, but good practice
+}
+
+main().catch(console.error);
+```
+
+## Comparison with @utcp/text
+
+| Feature | @utcp/file | @utcp/text |
+|---------|------------|-----------|
+| Browser compatible | ❌ No | ✅ Yes |
+| Node.js compatible | ✅ Yes | ✅ Yes |
+| File system access | ✅ Yes | ❌ No |
+| Direct content | ❌ No | ✅ Yes |
+| Use case | Server-side file reading | Web apps, inline content |
+
+## Development
+
+Refer to the root `README.md` for monorepo development and testing instructions.

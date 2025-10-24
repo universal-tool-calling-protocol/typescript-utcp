@@ -43,11 +43,13 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
       if ('api_key' in provider.auth) {
         const apiKeyAuth = provider.auth as ApiKeyAuth;
         if (apiKeyAuth.api_key) {
-          if (apiKeyAuth.location === 'header') {
+          // Default to 'header' if location is not specified
+          const location = apiKeyAuth.location || 'header';
+          if (location === 'header') {
             headers[apiKeyAuth.var_name] = apiKeyAuth.api_key;
-          } else if (apiKeyAuth.location === 'query') {
+          } else if (location === 'query') {
             queryParams[apiKeyAuth.var_name] = apiKeyAuth.api_key;
-          } else if (apiKeyAuth.location === 'cookie') {
+          } else if (location === 'cookie') {
             cookies[apiKeyAuth.var_name] = apiKeyAuth.api_key;
           }
         } else {

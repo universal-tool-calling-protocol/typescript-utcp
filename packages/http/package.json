@@ -1,6 +1,6 @@
 {
   "name": "@utcp/http",
-  "version": "1.0.6",
+  "version": "1.0.13",
   "description": "HTTP utilities for UTCP",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -43,7 +43,7 @@
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.6",
+    "@utcp/sdk": "^1.0.15",
     "axios": "^1.11.0",
     "js-yaml": "^4.1.0"
   },

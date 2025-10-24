@@ -1,3 +1,4 @@
+// packages/file/tsconfig.json
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
@@ -5,10 +6,17 @@
     "rootDir": "./src",
     "composite": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"],
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ],
   "references": [
     { "path": "../core" },
-    { "path": "../http" }
+    { "path": "../http" } 
   ]
 }

@@ -1,5 +1,6 @@
 /**
- * Text Communication Protocol plugin for UTCP.
+ * Text Content Communication Protocol plugin for UTCP.
+ * Handles direct text content (browser-compatible).
  */
 // packages/text/src/index.ts
 import { CommunicationProtocol, CallTemplateSerializer, ensureCorePluginsInitialized } from '@utcp/sdk';
@@ -14,12 +15,17 @@ import { TextCommunicationProtocol } from './text_communication_protocol';
 export function register(override: boolean = false): void {
   // Ensure core plugins are initialized first
   ensureCorePluginsInitialized();
+  
+  // Register the CallTemplate serializer
   CallTemplateSerializer.registerCallTemplate('text', new TextCallTemplateSerializer(), override);
+  
+  // Register the CommunicationProtocol instance
   CommunicationProtocol.communicationProtocols['text'] = new TextCommunicationProtocol();
 }
 
 // Automatically register Text plugin on import
 register();
 
+// Export all public APIs
 export * from './text_call_template';
 export * from './text_communication_protocol';

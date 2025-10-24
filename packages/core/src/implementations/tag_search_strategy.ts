@@ -11,8 +11,8 @@ import { Serializer } from '../interfaces/serializer';
  */
 export class TagSearchStrategy implements ToolSearchStrategy {
   public readonly tool_search_strategy_type: 'tag_and_description_word_match' = 'tag_and_description_word_match';
-  private readonly descriptionWeight: number;
-  private readonly tagWeight: number;
+  public readonly descriptionWeight: number;
+  public readonly tagWeight: number;
   private readonly _config: TagSearchStrategyConfig; 
 
    /**
@@ -92,21 +92,50 @@ export class TagSearchStrategy implements ToolSearchStrategy {
           }
 
           const tagWords = new Set(tagLower.match(/\w+/g) || []);
+          
+          // Exact word matches
           for (const word of tagWords) {
             if (queryWords.has(word)) {
               score += this.tagWeight * 0.5;
+            }
+          }
+          
+          // Partial/substring word matches (e.g., "author" matches "authors")
+          for (const queryWord of queryWords) {
+            if (queryWord.length > 2) {
+              for (const tagWord of tagWords) {
+                if (tagWord.length > 2 && (tagWord.includes(queryWord) || queryWord.includes(tagWord))) {
+                  score += this.tagWeight * 0.3; // Lower weight for partial matches in tags
+                  break; // Only count once per query word
+                }
+              }
             }
           }
         }
       }
 
       if (tool.description) {
+        const descriptionLower = tool.description.toLowerCase();
         const descriptionWords = new Set(
-          tool.description.toLowerCase().match(/\w+/g) || []
+          descriptionLower.match(/\w+/g) || []
         );
+        
+        // Exact word matches
         for (const word of descriptionWords) {
           if (queryWords.has(word) && word.length > 2) {
             score += this.descriptionWeight;
+          }
+        }
+        
+        // Partial/substring word matches (e.g., "author" matches "authors")
+        for (const queryWord of queryWords) {
+          if (queryWord.length > 2) {
+            for (const descWord of descriptionWords) {
+              if (descWord.length > 2 && (descWord.includes(queryWord) || queryWord.includes(descWord))) {
+                score += this.descriptionWeight * 0.5; // Lower weight for partial matches
+                break; // Only count once per query word
+              }
+            }
           }
         }
       }
@@ -116,7 +145,6 @@ export class TagSearchStrategy implements ToolSearchStrategy {
 
     const sortedTools = toolScores
       .sort((a, b) => b.score - a.score)
-      .filter(item => item.score > 0)
       .map(item => item.tool);
 
     return limit > 0 ? sortedTools.slice(0, limit) : sortedTools;
@@ -126,7 +154,11 @@ export class TagSearchStrategy implements ToolSearchStrategy {
 
 export class TagSearchStrategyConfigSerializer extends Serializer<TagSearchStrategy> {
   toDict(obj: TagSearchStrategy): { [key: string]: any } {
-    return { ...obj };
+    return {
+      tool_search_strategy_type: obj.tool_search_strategy_type,
+      description_weight: obj.descriptionWeight,
+      tag_weight: obj.tagWeight
+    }
   }
 
   validateDict(data: { [key: string]: any }): TagSearchStrategy {
