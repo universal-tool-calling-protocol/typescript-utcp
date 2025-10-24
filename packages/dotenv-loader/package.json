@@ -1,6 +1,6 @@
 {
   "name": "@utcp/dotenv-loader",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DotEnv Variable Loader plugin for UTCP",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -44,7 +44,7 @@
     "zod": "^3.23.8"
   },
   "peerDependencies": {
-    "@utcp/sdk": "^1.0.8"
+    "@utcp/sdk": "^1.0.15"
   },
   "devDependencies": {
     "bun-types": "latest",

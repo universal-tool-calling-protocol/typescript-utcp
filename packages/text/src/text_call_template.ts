@@ -12,12 +12,14 @@ import { Serializer } from '@utcp/sdk';
  * Attributes:
  *     call_template_type: Always "text" for text call templates.
  *     content: Direct text content of the UTCP manual or tool definitions (required).
+ *     base_url: Optional base URL for API endpoints when converting OpenAPI specs. Overrides spec's server configuration.
  *     auth: Always undefined - text call templates don't support authentication.
  *     auth_tools: Optional authentication to apply to generated tools from OpenAPI specs.
  */
 export interface TextCallTemplate extends CallTemplate {
   call_template_type: 'text';
   content: string;
+  base_url?: string;
   auth?: undefined;
   auth_tools?: Auth | null;
 }
@@ -29,6 +31,7 @@ export const TextCallTemplateSchema: z.ZodType<TextCallTemplate> = z.object({
   name: z.string().optional(),
   call_template_type: z.literal('text'),
   content: z.string().describe('Direct text content of the UTCP manual or tool definitions'),
+  base_url: z.string().optional().describe('Optional base URL for API endpoints when converting OpenAPI specs'),
   auth: z.undefined().optional(),
   auth_tools: AuthSchema.nullable().optional().transform((val) => {
     if (val === null || val === undefined) return null;
@@ -48,6 +51,7 @@ export class TextCallTemplateSerializer extends Serializer<TextCallTemplate> {
       name: obj.name,
       call_template_type: obj.call_template_type,
       content: obj.content,
+      base_url: obj.base_url,
       auth: obj.auth,
       auth_tools: obj.auth_tools ? new AuthSerializer().toDict(obj.auth_tools) : null,
     };

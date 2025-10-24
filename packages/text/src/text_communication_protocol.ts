@@ -53,6 +53,7 @@ export class TextCommunicationProtocol implements CommunicationProtocol {
           specUrl: 'text://content',
           callTemplateName: textCallTemplate.name,
           authTools: textCallTemplate.auth_tools || undefined,
+          baseUrl: textCallTemplate.base_url,
         });
         utcpManual = converter.convert();
       } else {

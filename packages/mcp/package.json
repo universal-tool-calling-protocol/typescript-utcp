@@ -1,6 +1,6 @@
 {
   "name": "@utcp/mcp",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Model Context Protocol integration for UTCP",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -45,7 +45,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.4",
-    "@utcp/sdk": "^1.0.11",
+    "@utcp/sdk": "^1.0.15",
     "axios": "^1.11.0"
   },
   "devDependencies": {

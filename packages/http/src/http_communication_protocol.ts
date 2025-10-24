@@ -243,11 +243,13 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         if (!apiKeyAuth.api_key) {
           throw new Error("API key for ApiKeyAuth is empty.");
         }
-        if (apiKeyAuth.location === 'header') {
+        // Default to 'header' if location is not specified
+        const location = apiKeyAuth.location || 'header';
+        if (location === 'header') {
           requestConfig.headers = { ...requestConfig.headers, [apiKeyAuth.var_name]: apiKeyAuth.api_key };
-        } else if (apiKeyAuth.location === 'query') {
+        } else if (location === 'query') {
           requestConfig.params = { ...requestConfig.params, [apiKeyAuth.var_name]: apiKeyAuth.api_key };
-        } else if (apiKeyAuth.location === 'cookie') {
+        } else if (location === 'cookie') {
           cookies[apiKeyAuth.var_name] = apiKeyAuth.api_key;
         }
       } else if (httpCallTemplate.auth.auth_type === 'basic') {

@@ -1,6 +1,6 @@
 {
   "name": "@utcp/text",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Text content protocol for UTCP - handles direct text content (browser-compatible)",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -38,8 +38,8 @@
     }
   },
   "dependencies": {
-    "@utcp/http": "^1.0.11",
-    "@utcp/sdk": "^1.0.11",
+    "@utcp/http": "^1.0.13",
+    "@utcp/sdk": "^1.0.15",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {

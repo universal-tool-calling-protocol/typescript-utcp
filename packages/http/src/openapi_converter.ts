@@ -33,6 +33,7 @@ export interface OpenApiConverterOptions {
   specUrl?: string;
   callTemplateName?: string;
   authTools?: Auth;
+  baseUrl?: string;
 }
 
 /**
@@ -47,6 +48,7 @@ export interface OpenApiConverterOptions {
 export class OpenApiConverter {
   private spec: Record<string, any>;
   private spec_url: string | undefined;
+  private base_url: string | undefined;
   private auth_tools: Auth | undefined;
   private placeholder_counter: number = 0;
   private call_template_name: string;
@@ -55,14 +57,16 @@ export class OpenApiConverter {
    * Initializes the OpenAPI converter.
    *
    * @param openapi_spec Parsed OpenAPI specification as a dictionary.
-   * @param options Optional settings including spec_url, call_template_name, and auth_tools.
+   * @param options Optional settings including spec_url, call_template_name, auth_tools, and baseUrl.
    *     - specUrl: URL where the specification was retrieved from.
    *     - callTemplateName: Custom name for the call_template if spec title not provided.
    *     - authTools: Optional auth configuration for generated tools.
+   *     - baseUrl: Optional base URL override for all API endpoints.
    */
   constructor(openapi_spec: Record<string, any>, options?: OpenApiConverterOptions) {
     this.spec = openapi_spec;
     this.spec_url = options?.specUrl;
+    this.base_url = options?.baseUrl;
     this.auth_tools = options?.authTools;
     this.placeholder_counter = 0;
 
@@ -105,10 +109,22 @@ export class OpenApiConverter {
     const tools: Tool[] = [];
     let baseUrl = '/';
 
-    const servers = this.spec.servers;
-    if (servers && Array.isArray(servers) && servers.length > 0 && servers[0].url) {
-      baseUrl = servers[0].url;
-    } else if (this.spec_url) {
+    // 1. Explicit baseUrl option (highest priority)
+    if (this.base_url) {
+      baseUrl = this.base_url;
+    }
+    // 2. OpenAPI 3.0 servers field
+    else if (this.spec.servers && Array.isArray(this.spec.servers) && this.spec.servers.length > 0 && this.spec.servers[0].url) {
+      baseUrl = this.spec.servers[0].url;
+    }
+    // 3. OpenAPI 2.0 host and basePath fields
+    else if (this.spec.host) {
+      const scheme = this.spec.schemes?.[0] || 'https';
+      const basePath = this.spec.basePath || '';
+      baseUrl = `${scheme}://${this.spec.host}${basePath}`;
+    }
+    // 4. Fallback to spec_url ONLY if it's an HTTP/HTTPS URL
+    else if (this.spec_url && (this.spec_url.startsWith('http://') || this.spec_url.startsWith('https://'))) {
       try {
         const parsedUrl = new URL(this.spec_url);
         baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
@@ -116,7 +132,7 @@ export class OpenApiConverter {
         console.error(`[OpenApiConverter] Invalid spec_url provided: ${this.spec_url}`);
       }
     } else {
-      console.warn("[OpenApiConverter] No server info or spec URL provided. Using fallback base URL: '/'");
+      console.warn("[OpenApiConverter] No server info found in OpenAPI spec. Using fallback base URL: '/'. Tools may not work correctly without a valid base URL.");
     }
 
     const paths = this.spec.paths || {};

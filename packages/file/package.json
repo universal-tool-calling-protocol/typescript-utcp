@@ -1,6 +1,6 @@
 {
   "name": "@utcp/file",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "File system protocol for UTCP - reads UTCP manuals from local files (Node.js only)",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -43,8 +43,8 @@
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.8",
-    "@utcp/http": "^1.0.7",
+    "@utcp/sdk": "^1.0.15",
+    "@utcp/http": "^1.0.13",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
