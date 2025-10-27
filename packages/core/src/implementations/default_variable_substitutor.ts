@@ -77,12 +77,10 @@ export class DefaultVariableSubstitutor implements VariableSubstitutor {
       throw new Error(`Variable namespace '${namespace}' contains invalid characters. Only alphanumeric characters and underscores are allowed.`);
     }
 
-    const objString = JSON.stringify(obj);
-    if (objString && objString.includes('$ref')) {
-      return obj;
-    }
-
     if (typeof obj === 'string') {
+      if (obj.includes('$ref')) {
+        return obj;
+      }
       let currentString: string = obj;
       const regex = /\$\{([a-zA-Z0-9_]+)\}|\$([a-zA-Z0-9_]+)/g;
       let match: RegExpExecArray | null;
@@ -147,6 +145,10 @@ export class DefaultVariableSubstitutor implements VariableSubstitutor {
     const regex = /\$\{([a-zA-Z0-9_]+)\}|\$([a-zA-Z0-9_]+)/g;
 
     if (typeof obj === 'string') {
+      if (obj.includes('$ref')) {
+        return [];
+      }
+
       let match;
       while ((match = regex.exec(obj)) !== null) {
         const varNameInTemplate = match[1] || match[2];
