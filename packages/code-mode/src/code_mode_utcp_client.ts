@@ -38,6 +38,8 @@ You have access to a CodeModeUtcpClient that allows you to execute TypeScript co
 - Build properly structured input objects based on interface definitions
 - Handle errors appropriately with try/catch blocks
 - Chain tool calls by using results from previous calls
+- return the results you need
+- the code you write will be wrapped in an async function and executed in a vm context
 
 ### 4. Best Practices
 - **Discover first, code second**: Always explore available tools before writing execution code
