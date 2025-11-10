@@ -32,7 +32,7 @@ export class UtcpClient implements IUtcpClient {
   private _registeredCommProtocols: Map<string, CommunicationProtocol> = new Map();
   public readonly postProcessors: ToolPostProcessor[];
 
-  private constructor(
+  protected constructor(
     public readonly config: UtcpClientConfig,
     public readonly variableSubstitutor: VariableSubstitutor,
     public readonly root_dir: string | null = null,

@@ -1,7 +1,7 @@
 {
-  "name": "@utcp/sdk",
-  "version": "1.0.17",
-  "description": "Universal Tool Calling Protocol SDK",
+  "name": "@utcp/code-mode",
+  "version": "1.0.4",
+  "description": "Code execution mode for UTCP - enables executing TypeScript code chains with tool access",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,31 +10,26 @@
   "author": "UTCP Contributors",
   "repository": {
     "type": "git",
-    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp",
-    "directory": "packages/core"
+    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp.git",
+    "directory": "packages/code-mode"
   },
   "keywords": [
     "utcp",
-    "universal-tool-calling-protocol",
-    "tools",
-    "api",
+    "code",
     "typescript",
+    "execution",
     "tool calling",
-    "mcp",
-    "agent",
-    "ai",
-    "llm"
+    "chain"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "prebuild": "rm -rf dist || rmdir /s /q dist || true",
-    "build": "tsup && node scripts/replace-version.js"
+    "build": "tsup",
+    "test": "bun test"
   },
   "files": [
-    "dist",
-    "README.md"
+    "dist"
   ],
   "exports": {
     ".": {
@@ -45,10 +40,11 @@
     }
   },
   "dependencies": {
-    "dotenv": "^17.2.1",
-    "zod": "^3.23.8"
+    "@utcp/sdk": "^1.0.17"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@utcp/direct-call": "^1.0.12",
     "bun-types": "latest",
     "typescript": "^5.0.0"
   }
