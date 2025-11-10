@@ -35,11 +35,10 @@ You have access to a CodeModeUtcpClient that allows you to execute TypeScript co
 - Use \`await manual.tool({ param: value })\` syntax for all tool calls
 - Tools are async functions that return promises
 - You have access to standard JavaScript globals: \`console\`, \`JSON\`, \`Math\`, \`Date\`, etc.
+- All console output (\`console.log\`, \`console.error\`, etc.) is automatically captured and returned
 - Build properly structured input objects based on interface definitions
 - Handle errors appropriately with try/catch blocks
 - Chain tool calls by using results from previous calls
-- return the results you need
-- the code you write will be wrapped in an async function and executed in a vm context
 
 ### 4. Best Practices
 - **Discover first, code second**: Always explore available tools before writing execution code
@@ -152,18 +151,19 @@ ${interfaces.join('\n\n')}`;
   }
 
   /**
-   * Executes TypeScript code with access to all registered tools as functions.
-   * The code runs in a secure VM context where each tool is available as a TypeScript function.
+   * Executes TypeScript code with access to registered tools and captures console output.
+   * The code can call tools directly as functions and has access to standard JavaScript globals.
    * 
-   * @param code TypeScript code to execute
+   * @param code TypeScript code to execute  
    * @param timeout Optional timeout in milliseconds (default: 30000)
-   * @returns The result of the code execution
+   * @returns Object containing both the execution result and captured console logs
    */
-  public async callToolChain(code: string, timeout: number = 30000): Promise<any> {
+  public async callToolChain(code: string, timeout: number = 30000): Promise<{result: any, logs: string[]}> {
     const tools = await this.getTools();
     
-    // Create the execution context with tool functions
-    const context = await this.createExecutionContext(tools);
+    // Create the execution context with tool functions and log capture
+    const logs: string[] = [];
+    const context = await this.createExecutionContext(tools, logs);
     
     try {
       // Create VM context
@@ -178,7 +178,7 @@ ${interfaces.join('\n\n')}`;
       
       // Execute with timeout
       const result = await this.runWithTimeout(wrappedCode, vmContext, timeout);
-      return result;
+      return { result, logs };
     } catch (error) {
       throw new Error(`Code execution failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -219,16 +219,41 @@ ${interfaces.join('\n\n')}`;
   }
 
   /**
-   * Creates the execution context for the VM with tool functions and type definitions.
-   * Each tool becomes a callable function in the execution context.
+   * Creates the execution context for running TypeScript code.
+   * This context includes tool functions and basic JavaScript globals.
    * 
    * @param tools Array of tools to make available
+   * @param logs Optional array to capture console.log output
    * @returns Execution context object
    */
-  private async createExecutionContext(tools: Tool[]): Promise<Record<string, any>> {
+  private async createExecutionContext(tools: Tool[], logs?: string[]): Promise<Record<string, any>> {
+    // Create console object (either capturing logs or using standard console)
+    const consoleObj = logs ? {
+      log: (...args: any[]) => {
+        logs.push(args.map(arg => 
+          typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+        ).join(' '));
+      },
+      error: (...args: any[]) => {
+        logs.push('[ERROR] ' + args.map(arg => 
+          typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+        ).join(' '));
+      },
+      warn: (...args: any[]) => {
+        logs.push('[WARN] ' + args.map(arg => 
+          typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+        ).join(' '));
+      },
+      info: (...args: any[]) => {
+        logs.push('[INFO] ' + args.map(arg => 
+          typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+        ).join(' '));
+      }
+    } : console;
+
     const context: Record<string, any> = {
       // Add basic utilities
-      console,
+      console: consoleObj,
       JSON,
       Promise,
       Array,

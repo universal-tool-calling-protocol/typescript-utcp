@@ -46,7 +46,7 @@ await client.registerManual({
 });
 
 // Now execute TypeScript code that uses the tools
-const result = await client.callToolChain(`
+const { result, logs } = await client.callToolChain(`
   // Call the add tool using hierarchical access
   const sum1 = await math_tools.add({ a: 5, b: 3 });
   console.log('First sum:', sum1.result);
@@ -64,9 +64,40 @@ const result = await client.callToolChain(`
 `);
 
 console.log('Final result:', result); // 18
+console.log('Console output:', logs); // ['First sum: 8', 'Second sum: 18', 'Add tool interface: ...']
 ```
 
 ## Advanced Usage
+
+### Console Output Capture
+
+All console output is automatically captured and returned alongside execution results:
+
+```typescript
+const { result, logs } = await client.callToolChain(`
+  console.log('Starting calculation...');
+  console.error('This will show as [ERROR]');
+  console.warn('This will show as [WARN]');
+  
+  const sum1 = await math_tools.add({ a: 5, b: 3 });
+  console.log('First sum:', sum1.result);
+  
+  const sum2 = await math_tools.add({ a: sum1.result, b: 10 });
+  console.log('Final sum:', sum2.result);
+  
+  return sum2.result;
+`);
+
+console.log('Result:', result); // 18
+console.log('Captured logs:');
+logs.forEach((log, i) => console.log(`${i + 1}: ${log}`));
+// Output:
+// 1: Starting calculation...
+// 2: [ERROR] This will show as [ERROR]
+// 3: [WARN] This will show as [WARN]
+// 4: First sum: 8
+// 5: Final sum: 18
+```
 
 ### Getting TypeScript Interfaces
 
@@ -231,13 +262,13 @@ Extends `UtcpClient` with additional code execution capabilities.
 
 #### Methods
 
-##### `callToolChain(code: string, timeout?: number): Promise<any>`
+##### `callToolChain(code: string, timeout?: number): Promise<{result: any, logs: string[]}>`
 
-Executes TypeScript code with access to all registered tools.
+Executes TypeScript code with access to all registered tools and captures console output.
 
 - **code**: TypeScript code to execute
 - **timeout**: Optional timeout in milliseconds (default: 30000)
-- **Returns**: The result of the code execution
+- **Returns**: Object containing both the execution result and captured console logs (`console.log`, `console.error`, `console.warn`, `console.info`)
 
 ##### `toolToTypeScriptInterface(tool: Tool): string`
 

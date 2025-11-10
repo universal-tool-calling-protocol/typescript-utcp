@@ -299,13 +299,13 @@ describe('CodeModeUtcpClient', () => {
 
   test('should execute simple code with basic operations', async () => {
     const code = `
-      const x = 10;
-      const y = 20;
-      return { sum: x + y, product: x * y };
+      const x = 5;
+      const y = 10;
+      return x + y;
     `;
     
-    const result = await client.callToolChain(code);
-    expect(result).toEqual({ sum: 30, product: 200 });
+    const { result } = await client.callToolChain(code);
+    expect(result).toBe(15);
   });
 
   test('should execute code that calls a simple tool', async () => {
@@ -317,7 +317,7 @@ describe('CodeModeUtcpClient', () => {
       return result;
     `;
     
-    const result = await client.callToolChain(code);
+    const { result } = await client.callToolChain(code);
     expect(result.result).toBe(40);
     expect(result.operation).toBe('addition');
     
@@ -343,7 +343,7 @@ describe('CodeModeUtcpClient', () => {
       };
     `;
     
-    const result = await client.callToolChain(code);
+    const { result } = await client.callToolChain(code);
     expect(result.math.result).toBe(15);
     expect(result.greeting.greeting).toBe("Good day, Alice");
     expect(result.greeting.isFormal).toBe(true);
@@ -374,7 +374,7 @@ describe('CodeModeUtcpClient', () => {
       return result;
     `;
     
-    const result = await client.callToolChain(code);
+    const { result } = await client.callToolChain(code);
     expect(result.processedData.processed).toBe(true);
     expect(result.processedData.users).toBeDefined();
     expect(result.metadata.itemCount).toBe(1);
@@ -400,7 +400,7 @@ describe('CodeModeUtcpClient', () => {
       };
     `;
     
-    const result = await client.callToolChain(code);
+    const { result } = await client.callToolChain(code);
     expect(result.statistics.sum).toBe(25);
     expect(result.statistics.count).toBe(6);
     expect(result.statistics.average).toBe(25/6);
@@ -422,7 +422,7 @@ describe('CodeModeUtcpClient', () => {
       };
     `;
     
-    const result = await client.callToolChain(code);
+    const { result } = await client.callToolChain(code);
     expect(result.timeData.timestamp).toBeDefined();
     expect(result.timeData.iso).toBeDefined();
     expect(result.isRecent).toBe(true);
@@ -445,7 +445,7 @@ describe('CodeModeUtcpClient', () => {
       }
     `;
     
-    const result = await client.callToolChain(code);
+    const { result } = await client.callToolChain(code);
     expect(result.error).toBe(true);
     expect(result.caught).toBe(true);
     expect(result.message).toContain("Test error message");
@@ -483,7 +483,7 @@ describe('CodeModeUtcpClient', () => {
       };
     `;
     
-    const result = await client.callToolChain(code);
+    const { result } = await client.callToolChain(code);
     expect(result.mathPi).toBe(Math.PI);
     expect(typeof result.dateNow).toBe('number');
     expect(result.arrayMethods).toBe(true);
@@ -502,7 +502,7 @@ describe('CodeModeUtcpClient', () => {
       };
     `;
     
-    const result = await client.callToolChain(code);
+    const { result } = await client.callToolChain(code);
     expect(result.hasInterfaces).toBe(true);
     expect(result.interfacesContainNamespace).toBe(true);
     expect(result.canGetSpecificInterface).toBe(true);
@@ -558,11 +558,11 @@ describe('CodeModeUtcpClient', () => {
     const result = await client.callToolChain(code, 15000);
     
     // Verify the chain worked correctly
-    expect(result.steps.arrayProcessing.sum).toBe(50);
-    expect(result.steps.addition.result).toBe(150);
-    expect(result.steps.greeting.greeting).toBe("Hey CodeMode!");
-    expect(result.steps.finalProcessing.processedData.processed).toBe(true);
-    expect(result.summary.chainCompleted).toBe(true);
+    expect(result.result.steps.arrayProcessing.sum).toBe(50);
+    expect(result.result.steps.addition.result).toBe(150);
+    expect(result.result.steps.greeting.greeting).toBe("Hey CodeMode!");
+    expect(result.result.steps.finalProcessing.processedData.processed).toBe(true);
+    expect(result.result.summary.chainCompleted).toBe(true);
     
     // Verify all tools were called in the correct order
     expect(testResults.sumArrayCalled).toBeDefined();
@@ -575,6 +575,64 @@ describe('CodeModeUtcpClient', () => {
     expect(testResults.addCalled.b).toBe(100);
     expect(testResults.greetCalled.name).toBe("CodeMode");
     expect(testResults.greetCalled.formal).toBe(false);
+  });
+
+  test('should provide agent prompt template', () => {
+    const promptTemplate = CodeModeUtcpClient.AGENT_PROMPT_TEMPLATE;
+    
+    expect(typeof promptTemplate).toBe('string');
+    expect(promptTemplate.length).toBeGreaterThan(0);
+    expect(promptTemplate).toContain('Tool Discovery Phase');
+    expect(promptTemplate).toContain('Interface Introspection');
+    expect(promptTemplate).toContain('Code Execution Guidelines');
+    expect(promptTemplate).toContain('await manual.tool');
+    expect(promptTemplate).toContain('__interfaces');
+    expect(promptTemplate).toContain('__getToolInterface');
+    expect(promptTemplate).toContain('Discover first, code second');
+  });
+
+  test('should capture console.log output with callToolChain', async () => {
+    const code = `
+      console.log('First log message');
+      console.log('Number:', 42);
+      console.log('Object:', { name: 'test', value: 123 });
+      
+      const addResult = await test_tools.add({ a: 10, b: 20 });
+      console.log('Addition result:', addResult);
+      
+      return addResult.result;
+    `;
+    
+    const { result, logs } = await client.callToolChain(code);
+    
+    expect(result).toBe(30);
+    expect(logs).toHaveLength(4);
+    expect(logs[0]).toBe('First log message');
+    expect(logs[1]).toBe('Number: 42');
+    expect(logs[2]).toContain('"name": "test"');
+    expect(logs[2]).toContain('"value": 123');
+    expect(logs[3]).toContain('Addition result:');
+    expect(logs[3]).toContain('"result": 30');
+  });
+
+  test('should capture console error and warn with callToolChain', async () => {
+    const code = `
+      console.log('Regular log');
+      console.error('This is an error');
+      console.warn('This is a warning');
+      console.info('This is info');
+      
+      return 'done';
+    `;
+    
+    const { result, logs } = await client.callToolChain(code);
+    
+    expect(result).toBe('done');
+    expect(logs).toHaveLength(4);
+    expect(logs[0]).toBe('Regular log');
+    expect(logs[1]).toBe('[ERROR] This is an error');
+    expect(logs[2]).toBe('[WARN] This is a warning');
+    expect(logs[3]).toBe('[INFO] This is info');
   });
 });
 
