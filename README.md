@@ -15,6 +15,7 @@ UTCP offers a unified framework for integrating disparate tools and services, ma
 *   **Scalability**: Designed to handle a large number of tools and providers without compromising performance.
 *   **Extensibility**: A pluggable architecture allows developers to easily add new communication protocols, tool storage mechanisms, and search strategies without modifying the core library.
 *   **Interoperability**: With a growing ecosystem of protocol plugins—including HTTP, MCP, Text, File, and CLI—UTCP can integrate with almost any existing service or infrastructure.
+*   **Code Execution Mode**: Execute TypeScript code with hierarchical access to tools, complete console output capture, and runtime interface introspection for powerful AI agent workflows.
 *   **Type Safety**: Built on well-defined TypeScript interfaces and runtime validation powered by Zod, making it robust and developer-friendly.
 *   **Secure Variable Management**: Namespace-isolated variables prevent leakage between manuals, with support for environment variables and .env files.
 
@@ -28,13 +29,13 @@ Install UTCP packages from npm:
 
 ```bash
 # Install core SDK and desired protocol plugins
-npm install @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file
+npm install @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file @utcp/code-mode
 
 # Optional: Add dotenv variable loader for Node.js
 npm install @utcp/dotenv-loader
 
 # Or using bun
-bun add @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file
+bun add @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file @utcp/code-mode
 ```
 
 ### For Development
@@ -439,6 +440,81 @@ const cliTemplate = serializer.validateDict({
 });
 ```
 
+## Code Execution Mode
+
+The `@utcp/code-mode` package provides a powerful extension that allows executing TypeScript code with direct access to registered tools, perfect for AI agents and complex workflows:
+
+```typescript
+import { CodeModeUtcpClient } from '@utcp/code-mode';
+
+async function main() {
+  const client = await CodeModeUtcpClient.create();
+  
+  // Register your tools (same as regular UTCP)
+  await client.registerManual({
+    name: 'math_tools',
+    call_template_type: 'text',
+    content: '...' // Your tool definitions
+  });
+
+  // Execute TypeScript code with hierarchical tool access
+  const { result, logs } = await client.callToolChain(`
+    console.log('Starting calculation...');
+    
+    // Tools are organized by namespace: manual.tool
+    const sum = await math_tools.add({ a: 10, b: 20 });
+    console.log('Sum result:', sum.result);
+    
+    // Access TypeScript interfaces at runtime for introspection
+    const addInterface = __getToolInterface('math_tools.add');
+    console.log('Tool interface:', addInterface);
+    
+    // Chain multiple tool calls
+    const result = await math_tools.multiply({ 
+      a: sum.result, 
+      b: 2 
+    });
+    
+    return result;
+  `);
+  
+  console.log('Execution result:', result);
+  console.log('Console output:', logs);
+  // logs: ['Starting calculation...', 'Sum result: 30', 'Tool interface: ...']
+  
+  await client.close();
+}
+```
+
+### Code Mode Features
+
+- **Hierarchical Tool Access**: Tools organized by manual namespace (`manual.tool()`) preventing naming conflicts
+- **Console Output Capture**: All console output automatically captured and returned
+- **Runtime Interface Introspection**: Access TypeScript interface definitions during execution
+- **Type Safety**: Generated TypeScript interfaces for all tools with hierarchical namespaces
+- **Secure Execution**: VM-based sandboxed execution with timeout protection
+- **AI Agent Ready**: Built-in prompt template to guide AI agents on proper usage
+
+### Perfect for AI Agents
+
+The `CodeModeUtcpClient.AGENT_PROMPT_TEMPLATE` provides comprehensive guidance for AI agents:
+
+```typescript
+// Add to your AI system prompt
+const systemPrompt = `
+${CodeModeUtcpClient.AGENT_PROMPT_TEMPLATE}
+
+Your additional instructions...
+`;
+```
+
+The template includes:
+- Tool discovery workflow
+- Interface introspection patterns
+- Best practices for hierarchical tool access
+- Error handling guidelines
+- Runtime context documentation
+
 ## Monorepo Structure
 
 ```
@@ -449,6 +525,7 @@ typescript-utcp/
 │   ├── mcp/           # MCP protocol plugin
 │   ├── text/          # Text/string content protocol plugin (browser-compatible)
 │   ├── file/          # File system protocol plugin (Node.js only)
+│   ├── code-mode/     # TypeScript code execution with hierarchical tool access
 │   ├── dotenv-loader/ # DotEnv variable loader plugin (Node.js only)
 │   ├── direct-call/   # Direct call protocol plugin
 │   └── cli/           # CLI protocol plugin
@@ -462,6 +539,7 @@ Each package is independently published to npm:
 - `@utcp/mcp` - MCP protocol support
 - `@utcp/text` - Direct text/string content (browser-compatible)
 - `@utcp/file` - File system operations (Node.js only)
+- `@utcp/code-mode` - TypeScript code execution with hierarchical tool access
 - `@utcp/dotenv-loader` - DotEnv variable loader (Node.js only)
 - `@utcp/direct-call` - Direct function call protocol
 - `@utcp/cli` - Command-line tools
