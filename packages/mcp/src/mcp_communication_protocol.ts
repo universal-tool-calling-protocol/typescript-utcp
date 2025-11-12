@@ -99,7 +99,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       };
 
       transport = new StdioClientTransport({
-        command: isWindows ? 'cmd.exe' : '/bin/sh',
+        command: isWindows ? 'cmd.exe' : 'sh',
         args: isWindows ? ['/c', commandString] : ['-c', commandString],
         cwd: stdioConfig.cwd,
         env: combinedEnv,
