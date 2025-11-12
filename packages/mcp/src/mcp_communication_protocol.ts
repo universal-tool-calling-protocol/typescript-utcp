@@ -99,7 +99,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       };
 
       transport = new StdioClientTransport({
-        command: isWindows ? 'cmd.exe' : '/bin/sh',
+        command: isWindows ? 'cmd.exe' : 'sh',
         args: isWindows ? ['/c', commandString] : ['-c', commandString],
         cwd: stdioConfig.cwd,
         env: combinedEnv,
@@ -192,7 +192,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
         const utcpTools = mcpToolsResult.tools.map((mcpTool: McpToolResponse) => {
           return {
-            name: `${serverName}.${mcpTool.name}`,
+            name: `${mcpCallTemplate.name}.${serverName}.${mcpTool.name}`,
             description: mcpTool.description || '',
             inputs: mcpTool.inputSchema as JsonSchema,
             outputs: mcpTool.outputSchema as JsonSchema,
