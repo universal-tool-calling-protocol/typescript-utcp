@@ -460,7 +460,9 @@ describe('CodeModeUtcpClient', () => {
       return { completed: true };
     `;
     
-    await expect(client.callToolChain(code, 1000)).rejects.toThrow();
+    const result = await client.callToolChain(code, 1000);
+    expect(result.result).toBeNull();
+    expect(result.logs.some(log => log.includes('Code execution failed'))).toBe(true);
   });
 
   test('should handle code syntax errors', async () => {
@@ -469,7 +471,9 @@ describe('CodeModeUtcpClient', () => {
       return result;
     `;
     
-    await expect(client.callToolChain(invalidCode)).rejects.toThrow();
+    const result = await client.callToolChain(invalidCode);
+    expect(result.result).toBeNull();
+    expect(result.logs.some(log => log.includes('Code execution failed'))).toBe(true);
   });
 
   test('should have access to basic JavaScript globals', async () => {

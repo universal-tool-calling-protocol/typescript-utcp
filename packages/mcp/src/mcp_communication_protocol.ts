@@ -88,10 +88,6 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
     if (serverConfig.transport === 'stdio') {
       const stdioConfig = serverConfig as McpStdioServer;
-      const isWindows = process.platform === "win32";
-      const commandString = [stdioConfig.command, ...(stdioConfig.args || [])]
-        .map(part => part.includes(' ') ? `"${part}"` : part)
-        .join(' ');
 
       const combinedEnv: Record<string, string> = {
         ...(process.env as Record<string, string>),
@@ -99,8 +95,8 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       };
 
       transport = new StdioClientTransport({
-        command: isWindows ? 'cmd.exe' : 'sh',
-        args: isWindows ? ['/c', commandString] : ['-c', commandString],
+        command: stdioConfig.command,
+        args: stdioConfig.args || [],
         cwd: stdioConfig.cwd,
         env: combinedEnv,
       });

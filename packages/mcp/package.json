@@ -1,6 +1,6 @@
 {
   "name": "@utcp/mcp",
-  "version": "1.0.14",
+  "version": "1.0.16",
   "description": "Model Context Protocol integration for UTCP",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
