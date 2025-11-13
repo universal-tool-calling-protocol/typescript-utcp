@@ -82,6 +82,20 @@ Remember: Always discover and understand available tools before attempting to us
   }
 
   /**
+   * Sanitizes an identifier to be a valid TypeScript identifier.
+   * Replaces any non-alphanumeric character (except underscore) with underscore
+   * and ensures the first character is not a number.
+   * 
+   * @param name The name to sanitize
+   * @returns Sanitized identifier
+   */
+  private sanitizeIdentifier(name: string): string {
+    return name
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .replace(/^[0-9]/, '_$&');
+  }
+
+  /**
    * Converts a Tool object into a TypeScript function interface string.
    * This generates the function signature that can be used in TypeScript code.
    * 
@@ -99,15 +113,16 @@ Remember: Always discover and understand available tools before attempting to us
     
     if (tool.name.includes('.')) {
       const [manualName, ...toolParts] = tool.name.split('.');
-      const toolName = toolParts.join('_');
-      accessPattern = `${manualName}.${toolName}`;
+      const sanitizedManualName = this.sanitizeIdentifier(manualName);
+      const toolName = toolParts.map(part => this.sanitizeIdentifier(part)).join('_');
+      accessPattern = `${sanitizedManualName}.${toolName}`;
       
       // Generate interfaces within namespace
       const inputInterfaceContent = this.jsonSchemaToObjectContent(tool.inputs);
       const outputInterfaceContent = this.jsonSchemaToObjectContent(tool.outputs);
       
       interfaceContent = `
-namespace ${manualName} {
+namespace ${sanitizedManualName} {
   interface ${toolName}Input {
 ${inputInterfaceContent}
   }
@@ -118,9 +133,10 @@ ${outputInterfaceContent}
 }`;
     } else {
       // No manual namespace, generate flat interfaces
-      accessPattern = tool.name;
-      const inputType = this.jsonSchemaToTypeScript(tool.inputs, `${tool.name}Input`);
-      const outputType = this.jsonSchemaToTypeScript(tool.outputs, `${tool.name}Output`);
+      const sanitizedToolName = this.sanitizeIdentifier(tool.name);
+      accessPattern = sanitizedToolName;
+      const inputType = this.jsonSchemaToTypeScript(tool.inputs, `${sanitizedToolName}Input`);
+      const outputType = this.jsonSchemaToTypeScript(tool.outputs, `${sanitizedToolName}Output`);
       interfaceContent = `${inputType}\n\n${outputType}`;
     }
     const interfaceString = `
@@ -180,7 +196,7 @@ ${interfaces.join('\n\n')}`;
       const result = await this.runWithTimeout(wrappedCode, vmContext, timeout);
       return { result, logs };
     } catch (error) {
-      throw new Error(`Code execution failed: ${error instanceof Error ? error.message : String(error)}`);
+      return { result: null, logs: [...logs, `[ERROR] Code execution failed: ${error instanceof Error ? error.message : String(error)}`] };
     }
   }
 
@@ -276,15 +292,16 @@ ${interfaces.join('\n\n')}`;
     for (const tool of tools) {
       if (tool.name.includes('.')) {
         const [manualName, ...toolParts] = tool.name.split('.');
-        const toolName = toolParts.join('_'); // Join remaining parts with underscore
+        const sanitizedManualName = this.sanitizeIdentifier(manualName);
+        const toolName = toolParts.map(part => this.sanitizeIdentifier(part)).join('_');
         
         // Create manual namespace object if it doesn't exist
-        if (!context[manualName]) {
-          context[manualName] = {};
+        if (!context[sanitizedManualName]) {
+          context[sanitizedManualName] = {};
         }
         
         // Add the tool function to the manual namespace
-        context[manualName][toolName] = async (args: Record<string, any>) => {
+        context[sanitizedManualName][toolName] = async (args: Record<string, any>) => {
           try {
             return await this.callTool(tool.name, args);
           } catch (error) {
@@ -293,7 +310,8 @@ ${interfaces.join('\n\n')}`;
         };
       } else {
         // If no dot, add directly to root context (no manual name)
-        context[tool.name] = async (args: Record<string, any>) => {
+        const sanitizedToolName = this.sanitizeIdentifier(tool.name);
+        context[sanitizedToolName] = async (args: Record<string, any>) => {
           try {
             return await this.callTool(tool.name, args);
           } catch (error) {
