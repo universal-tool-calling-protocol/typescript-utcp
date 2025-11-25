@@ -5,6 +5,7 @@ The `@utcp/mcp` package enables the `UtcpClient` to interact with tools defined 
 ## Features
 
 *   **Automatic Plugin Registration**: Registers automatically when imported—no manual setup required.
+*   **FastMCP 2.0+ Compatibility**: Automatically resolves JSON Schema `$defs` references, ensuring compatibility with modern MCP servers built on FastMCP 2.0+.
 *   **MCP `CallTemplate`**: Defines the configuration for connecting to one or more MCP servers (`McpCallTemplate`), including:
     *   Transport type (`stdio` or `http`)
     *   Optional OAuth2 authentication for HTTP-based servers
@@ -215,6 +216,25 @@ MCP servers can expose resources (files, data sources, etc.) alongside tools. To
   register_resources_as_tools: true  // Exposes server resources as tools
 }
 ```
+
+## FastMCP Compatibility
+
+Starting with version 1.0.17, this plugin automatically handles JSON Schema `$defs` references used by FastMCP 2.0+ servers. This resolves the issue where tool discovery would fail with:
+
+```
+MissingRefError: can't resolve reference #/$defs/...
+```
+
+**How it works:**
+- When tools are discovered from MCP servers, their input and output schemas are automatically dereferenced
+- `$defs` references are resolved and inlined into the schema
+- This process is transparent and requires no configuration changes
+- If dereferencing fails for any reason, the original schema is used as a fallback
+
+This ensures seamless integration with:
+- `basic-memory` and other FastMCP-based servers
+- Any MCP server using modern JSON Schema draft-2020-12 features
+- Legacy MCP servers (which continue to work as before)
 
 ## Tool Naming Convention
 
