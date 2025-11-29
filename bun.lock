@@ -109,7 +109,7 @@
     },
     "packages/mcp": {
       "name": "@utcp/mcp",
-      "version": "1.0.16",
+      "version": "1.0.17",
       "dependencies": {
         "@apidevtools/json-schema-ref-parser": "^15.1.2",
         "@modelcontextprotocol/sdk": "^1.17.4",
@@ -118,6 +118,7 @@
       },
       "devDependencies": {
         "@types/bun": "latest",
+        "@types/json-schema": "^7.0.15",
         "bun-types": "latest",
         "typescript": "^5.9.2",
         "zod-to-json-schema": "^3.24.6",
