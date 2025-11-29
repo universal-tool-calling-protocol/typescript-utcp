@@ -12,6 +12,7 @@ import { OAuth2Auth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk'; 
 import { McpCallTemplateSchema, McpHttpServer, McpServerConfig, McpStdioServer } from './mcp_call_template';
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import $RefParser from '@apidevtools/json-schema-ref-parser';
 
 // Define a simple type for the tool objects returned by MCP's listTools
 interface McpToolResponse {
@@ -53,6 +54,36 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
   private _logError(message: string, error?: any): void {
     console.error(`[McpCommunicationProtocol Error] ${message}`, error);
+  }
+
+  /**
+   * Dereferences a JSON Schema by resolving all $refs and $defs.
+   * This fixes the issue with FastMCP 2.0+ servers that use $defs references.
+   * 
+   * @param schema - The schema to dereference
+   * @returns The dereferenced schema with all references inlined
+   */
+  private async _dereferenceSchema(schema: unknown): Promise<JsonSchema> {
+    if (!schema || typeof schema !== 'object') {
+      return schema as JsonSchema;
+    }
+    
+    try {
+      // Check if schema contains $defs or $ref
+      const schemaStr = JSON.stringify(schema);
+      if (!schemaStr.includes('$defs') && !schemaStr.includes('$ref')) {
+        // No refs to resolve, return as-is
+        return schema as JsonSchema;
+      }
+      
+      // Dereference the schema (inlines all $refs and $defs)
+      const dereferenced = await $RefParser.dereference(schema as any);
+      return dereferenced as JsonSchema;
+    } catch (error: any) {
+      // If dereferencing fails, log a warning and return the original schema
+      this._logError(`Failed to dereference schema, using original:`, error.message);
+      return schema as JsonSchema;
+    }
   }
 
   private async _cleanupSession(sessionKey: string): Promise<void> {
@@ -186,17 +217,24 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
           throw new Error("Invalid response format from listTools");
         }
 
-        const utcpTools = mcpToolsResult.tools.map((mcpTool: McpToolResponse) => {
+        // Dereference schemas to resolve $defs references (fixes FastMCP 2.0+ compatibility)
+        const utcpToolsPromises = mcpToolsResult.tools.map(async (mcpTool: McpToolResponse) => {
+          const [dereferencedInputs, dereferencedOutputs] = await Promise.all([
+            this._dereferenceSchema(mcpTool.inputSchema),
+            this._dereferenceSchema(mcpTool.outputSchema)
+          ]);
+          
           return {
             name: `${mcpCallTemplate.name}.${serverName}.${mcpTool.name}`,
             description: mcpTool.description || '',
-            inputs: mcpTool.inputSchema as JsonSchema,
-            outputs: mcpTool.outputSchema as JsonSchema,
+            inputs: dereferencedInputs,
+            outputs: dereferencedOutputs,
             tags: [],
             tool_call_template: mcpCallTemplate,
           };
         });
         
+        const utcpTools = await Promise.all(utcpToolsPromises);
         allTools.push(...utcpTools);
         this._logInfo(`Discovered ${utcpTools.length} tools from server '${serverName}'.`);
 
