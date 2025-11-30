@@ -123,6 +123,7 @@ export interface McpCallTemplate extends CallTemplate {
   config: McpConfig;
   auth?: OAuth2Auth;
   register_resources_as_tools?: boolean;
+  allowed_communication_protocols?: string[];
 }
 
 /**
@@ -135,6 +136,7 @@ export const McpCallTemplateSchema: z.ZodType<McpCallTemplate> = z.object({
   config: McpConfigSchema.describe('Configuration object containing MCP server definitions. Follows the same format as the official MCP server configuration.'),
   auth: AuthSchema.nullable().optional().describe('Optional OAuth2 authentication for HTTP-based MCP servers.'),
   register_resources_as_tools: z.boolean().default(false).describe('Whether to register MCP resources as callable tools. When True, server resources are exposed as tools that can be called.'),
+  allowed_communication_protocols: z.array(z.string()).optional().describe('Optional list of allowed communication protocol types for tools within this manual.'),
 }) as z.ZodType<McpCallTemplate>;
 
 /**
@@ -153,6 +155,7 @@ export class McpCallTemplateSerializer extends Serializer<McpCallTemplate> {
       config: obj.config,
       auth: obj.auth,
       register_resources_as_tools: obj.register_resources_as_tools,
+      allowed_communication_protocols: obj.allowed_communication_protocols,
     };
   }
 

@@ -138,11 +138,26 @@ export class UtcpClient implements IUtcpClient {
     const result = await protocol.registerManual(this, processedCallTemplate);
 
     if (result.success) {
+      // Determine allowed protocols: use explicit list if provided, otherwise default to manual's own protocol
+      const allowedProtocols = (processedCallTemplate.allowed_communication_protocols?.length)
+        ? processedCallTemplate.allowed_communication_protocols
+        : [processedCallTemplate.call_template_type];
+
+      // Filter tools based on allowed protocols and prefix names
+      const filteredTools = [];
       for (const tool of result.manual.tools) {
+        const toolProtocol = tool.tool_call_template.call_template_type;
+        if (!allowedProtocols.includes(toolProtocol)) {
+          console.warn(`Tool '${tool.name}' uses communication protocol '${toolProtocol}' which is not in allowed protocols [${allowedProtocols.map(p => `'${p}'`).join(', ')}] for manual '${manualCallTemplate.name}'. Tool will not be registered.`);
+          continue;
+        }
         if (!tool.name.startsWith(`${processedCallTemplate.name}.`)) {
           tool.name = `${processedCallTemplate.name}.${tool.name}`;
         }
+        filteredTools.push(tool);
       }
+      result.manual.tools = filteredTools;
+
       await this.config.tool_repository.saveManual(processedCallTemplate, result.manual);
       console.log(`Successfully registered manual '${manualCallTemplate.name}' with ${result.manual.tools.length} tools.`);
     } else {
@@ -224,6 +239,16 @@ export class UtcpClient implements IUtcpClient {
         throw new Error(`Could not find manual call template for manual '${manualName}'.`);
     }
 
+    // Validate protocol is allowed
+    const toolProtocol = tool.tool_call_template.call_template_type;
+    const allowedProtocols = (manualCallTemplate.allowed_communication_protocols?.length)
+      ? manualCallTemplate.allowed_communication_protocols
+      : [manualCallTemplate.call_template_type];
+    
+    if (!allowedProtocols.includes(toolProtocol)) {
+      throw new Error(`Tool '${toolName}' uses communication protocol '${toolProtocol}' which is not allowed by manual '${manualName}'. Allowed protocols: [${allowedProtocols.map(p => `'${p}'`).join(', ')}]`);
+    }
+
     const processedToolCallTemplate = await this.substituteCallTemplateVariables(tool.tool_call_template, manualName);
 
     const protocol = this._registeredCommProtocols.get(processedToolCallTemplate.call_template_type);
@@ -261,6 +286,16 @@ export class UtcpClient implements IUtcpClient {
     const manualCallTemplate = await this.config.tool_repository.getManualCallTemplate(manualName);
     if (!manualCallTemplate) {
         throw new Error(`Could not find manual call template for manual '${manualName}'.`);
+    }
+
+    // Validate protocol is allowed
+    const toolProtocol = tool.tool_call_template.call_template_type;
+    const allowedProtocols = (manualCallTemplate.allowed_communication_protocols?.length)
+      ? manualCallTemplate.allowed_communication_protocols
+      : [manualCallTemplate.call_template_type];
+    
+    if (!allowedProtocols.includes(toolProtocol)) {
+      throw new Error(`Tool '${toolName}' uses communication protocol '${toolProtocol}' which is not allowed by manual '${manualName}'. Allowed protocols: [${allowedProtocols.map(p => `'${p}'`).join(', ')}]`);
     }
 
     const processedToolCallTemplate = await this.substituteCallTemplateVariables(tool.tool_call_template, manualName);

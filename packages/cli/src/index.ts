@@ -13,5 +13,8 @@ export function register(override: boolean = false): void {
   CommunicationProtocol.communicationProtocols['cli'] = new CliCommunicationProtocol();
 }
 
+// Automatically register CLI plugins on import
+register();
+
 export * from './cli_call_template';
 export * from './cli_communication_protocol';

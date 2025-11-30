@@ -1,19 +1,21 @@
 // packages/core/tests/utcp_client.test.ts
-import { test, expect, afterAll, beforeAll, describe } from "bun:test";
+import { test, expect, afterAll, beforeAll, afterEach, describe } from "bun:test";
 import { Subprocess } from "bun";
 import path from "path";
 import { writeFile, unlink } from "fs/promises";
 
-import { UtcpClient } from "@utcp/sdk";
+import { UtcpClient, CommunicationProtocol, RegisterManualResult, CallTemplate, UtcpManual, Tool, IUtcpClient } from "@utcp/sdk";
 // Import protocol packages to register their serializers and communication protocols
 import "@utcp/http";
 import "@utcp/file";
 import "@utcp/mcp";
+import "@utcp/cli";
 import "@utcp/dotenv-loader";
 // Import types after registering the packages
 import type { McpCallTemplate } from "@utcp/mcp";
 import type { HttpCallTemplate } from "@utcp/http";
 import type { FileCallTemplate } from "@utcp/file";
+import type { CliCallTemplate } from "@utcp/cli";
 
 let httpManualServerProcess: Subprocess | null = null;
 let mcpStdioServerProcess: Subprocess | null = null;
@@ -356,6 +358,313 @@ describe("UtcpClient End-to-End Tests", () => {
     console.log(`[Test] Search results for "echo": ${searchResults.map(t => t.name).join(', ')}`);
     expect(searchResults.length).toBeGreaterThan(0);
     expect(searchResults[0]?.name).toBe("mcp_search_manual.mock_stdio_server.echo");
+
+    await client.close();
+  });
+});
+
+// --- allowed_communication_protocols Tests ---
+// These tests use mock communication protocols to verify protocol filtering behavior
+
+/**
+ * Mock communication protocol for testing allowed_communication_protocols.
+ * Returns a predefined manual on registration and a predefined result on tool calls.
+ */
+class MockCommunicationProtocol extends CommunicationProtocol {
+  private manual: UtcpManual;
+  private callResult: any;
+
+  constructor(manual?: UtcpManual, callResult: any = "mock_result") {
+    super();
+    this.manual = manual || { utcp_version: "1.0", manual_version: "1.0", tools: [] };
+    this.callResult = callResult;
+  }
+
+  async registerManual(caller: IUtcpClient, manualCallTemplate: CallTemplate): Promise<RegisterManualResult> {
+    return {
+      manualCallTemplate,
+      manual: this.manual,
+      success: true,
+      errors: [],
+    };
+  }
+
+  async deregisterManual(caller: IUtcpClient, manualCallTemplate: CallTemplate): Promise<void> {}
+
+  async callTool(caller: IUtcpClient, toolName: string, toolArgs: Record<string, any>, toolCallTemplate: CallTemplate): Promise<any> {
+    return this.callResult;
+  }
+
+  async *callToolStreaming(caller: IUtcpClient, toolName: string, toolArgs: Record<string, any>, toolCallTemplate: CallTemplate): AsyncGenerator<any, void, unknown> {
+    yield this.callResult;
+  }
+}
+
+describe("allowed_communication_protocols Tests", () => {
+  // Store original protocols to restore after tests
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+
+  beforeAll(() => {
+    // Save original protocols
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+  });
+
+  afterEach(() => {
+    // Restore original protocols after each test
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+  });
+
+  test("should call tool when its protocol is in the allowed list", async () => {
+    console.log("\nRunning test: call_tool_allowed_protocol...");
+
+    // Create HTTP tool
+    const httpTool: Tool = {
+      name: "http_tool",
+      description: "HTTP test tool",
+      inputs: { type: "object", properties: { param1: { type: "string" } } },
+      outputs: { type: "object", properties: {} },
+      tags: ["http"],
+      tool_call_template: {
+        name: "http_provider",
+        call_template_type: "http",
+        url: "https://api.example.com/call",
+        http_method: "GET",
+        content_type: "application/json",
+      } as HttpCallTemplate,
+    };
+
+    const manual: UtcpManual = { utcp_version: "1.0", manual_version: "1.0", tools: [httpTool] };
+    const mockProtocol = new MockCommunicationProtocol(manual, "test_result");
+    CommunicationProtocol.communicationProtocols["http"] = mockProtocol;
+
+    const client = await UtcpClient.create(process.cwd(), {});
+
+    await client.registerManual({
+      name: "test_manual",
+      call_template_type: "http",
+      url: "https://api.example.com/tool",
+      http_method: "POST",
+      content_type: "application/json",
+      allowed_communication_protocols: ["http", "cli"], // Allow both HTTP and CLI
+    } as HttpCallTemplate);
+
+    // Call should succeed since "http" is in allowed_communication_protocols
+    const result = await client.callTool("test_manual.http_tool", { param1: "value1" });
+    expect(result).toBe("test_result");
+
+    await client.close();
+  });
+
+  test("should filter out tools with disallowed protocols during registration", async () => {
+    console.log("\nRunning test: register_filters_disallowed_protocol_tools...");
+
+    // Create a CLI tool (which will not be allowed)
+    const cliTool: Tool = {
+      name: "cli_tool",
+      description: "CLI test tool",
+      inputs: { type: "object", properties: { command: { type: "string", description: "Command to execute" } }, required: ["command"] },
+      outputs: { type: "object", properties: { output: { type: "string", description: "Command output" } } },
+      tags: ["cli", "test"],
+      tool_call_template: {
+        name: "cli_provider",
+        call_template_type: "cli",
+        commands: [{ command: "echo UTCP_ARG_command_UTCP_END" }],
+      } as CliCallTemplate,
+    };
+
+    const manual: UtcpManual = { utcp_version: "1.0", manual_version: "1.0", tools: [cliTool] };
+    const mockHttpProtocol = new MockCommunicationProtocol(manual);
+    const mockCliProtocol = new MockCommunicationProtocol();
+    CommunicationProtocol.communicationProtocols["http"] = mockHttpProtocol;
+    CommunicationProtocol.communicationProtocols["cli"] = mockCliProtocol;
+
+    const client = await UtcpClient.create(process.cwd(), {});
+
+    const result = await client.registerManual({
+      name: "http_manual",
+      call_template_type: "http",
+      url: "https://api.example.com/tool",
+      http_method: "POST",
+      content_type: "application/json",
+      allowed_communication_protocols: ["http"], // Only allow HTTP
+    } as HttpCallTemplate);
+
+    // CLI tool should be filtered out during registration
+    expect(result.manual.tools.length).toBe(0);
+
+    // Tool should not exist in repository
+    const tool = await client.getTool("http_manual.cli_tool");
+    expect(tool).toBeUndefined();
+
+    await client.close();
+  });
+
+  test("should only allow manual's own protocol when no allowed_communication_protocols is set", async () => {
+    console.log("\nRunning test: call_tool_default_protocol_restriction...");
+
+    // Create tools: one HTTP (should be registered), one CLI (should be filtered out)
+    const httpTool: Tool = {
+      name: "http_tool",
+      description: "HTTP test tool",
+      inputs: { type: "object", properties: {} },
+      outputs: { type: "object", properties: {} },
+      tags: [],
+      tool_call_template: {
+        name: "http_provider",
+        call_template_type: "http",
+        url: "https://api.example.com/call",
+        http_method: "GET",
+        content_type: "application/json",
+      } as HttpCallTemplate,
+    };
+
+    const cliTool: Tool = {
+      name: "cli_tool",
+      description: "CLI test tool",
+      inputs: { type: "object", properties: {} },
+      outputs: { type: "object", properties: {} },
+      tags: [],
+      tool_call_template: {
+        name: "cli_provider",
+        call_template_type: "cli",
+        commands: [{ command: "echo test" }],
+      } as CliCallTemplate,
+    };
+
+    const manual: UtcpManual = { utcp_version: "1.0", manual_version: "1.0", tools: [httpTool, cliTool] };
+    const mockHttpProtocol = new MockCommunicationProtocol(manual, "http_result");
+    const mockCliProtocol = new MockCommunicationProtocol();
+    CommunicationProtocol.communicationProtocols["http"] = mockHttpProtocol;
+    CommunicationProtocol.communicationProtocols["cli"] = mockCliProtocol;
+
+    const client = await UtcpClient.create(process.cwd(), {});
+
+    // Register HTTP manual without explicit protocol restrictions
+    // Default behavior: only HTTP tools should be allowed
+    const result = await client.registerManual({
+      name: "http_manual",
+      call_template_type: "http",
+      url: "https://api.example.com/tool",
+      http_method: "POST",
+      content_type: "application/json",
+      // No allowed_communication_protocols set - defaults to ["http"]
+    } as HttpCallTemplate);
+
+    // Only HTTP tool should be registered, CLI tool should be filtered out
+    expect(result.manual.tools.length).toBe(1);
+    expect(result.manual.tools[0].name).toBe("http_manual.http_tool");
+
+    // HTTP tool call should succeed
+    const callResult = await client.callTool("http_manual.http_tool", {});
+    expect(callResult).toBe("http_result");
+
+    // CLI tool should not exist in repository
+    const cliToolInRepo = await client.getTool("http_manual.cli_tool");
+    expect(cliToolInRepo).toBeUndefined();
+
+    await client.close();
+  });
+
+  test("should register tools from multiple protocols when explicitly allowed", async () => {
+    console.log("\nRunning test: register_with_multiple_allowed_protocols...");
+
+    const httpTool: Tool = {
+      name: "http_tool",
+      description: "HTTP test tool",
+      inputs: { type: "object", properties: {} },
+      outputs: { type: "object", properties: {} },
+      tags: [],
+      tool_call_template: {
+        name: "http_provider",
+        call_template_type: "http",
+        url: "https://api.example.com/call",
+        http_method: "GET",
+        content_type: "application/json",
+      } as HttpCallTemplate,
+    };
+
+    const cliTool: Tool = {
+      name: "cli_tool",
+      description: "CLI test tool",
+      inputs: { type: "object", properties: {} },
+      outputs: { type: "object", properties: {} },
+      tags: [],
+      tool_call_template: {
+        name: "cli_provider",
+        call_template_type: "cli",
+        commands: [{ command: "echo test" }],
+      } as CliCallTemplate,
+    };
+
+    const manual: UtcpManual = { utcp_version: "1.0", manual_version: "1.0", tools: [httpTool, cliTool] };
+    const mockHttpProtocol = new MockCommunicationProtocol(manual, "http_result");
+    const mockCliProtocol = new MockCommunicationProtocol(undefined, "cli_result");
+    CommunicationProtocol.communicationProtocols["http"] = mockHttpProtocol;
+    CommunicationProtocol.communicationProtocols["cli"] = mockCliProtocol;
+
+    const client = await UtcpClient.create(process.cwd(), {});
+
+    const result = await client.registerManual({
+      name: "multi_protocol_manual",
+      call_template_type: "http",
+      url: "https://api.example.com/tool",
+      http_method: "POST",
+      content_type: "application/json",
+      allowed_communication_protocols: ["http", "cli"], // Allow both
+    } as HttpCallTemplate);
+
+    // Both tools should be registered
+    expect(result.manual.tools.length).toBe(2);
+    const toolNames = result.manual.tools.map(t => t.name);
+    expect(toolNames).toContain("multi_protocol_manual.http_tool");
+    expect(toolNames).toContain("multi_protocol_manual.cli_tool");
+
+    // Both tools should be callable
+    const httpResult = await client.callTool("multi_protocol_manual.http_tool", {});
+    expect(httpResult).toBe("http_result");
+
+    const cliResult = await client.callTool("multi_protocol_manual.cli_tool", {});
+    expect(cliResult).toBe("cli_result");
+
+    await client.close();
+  });
+
+  test("should treat empty allowed_communication_protocols array as default (manual's own protocol)", async () => {
+    console.log("\nRunning test: call_tool_empty_allowed_protocols_defaults_to_manual_type...");
+
+    // Create a CLI tool (which will be filtered since manual is HTTP)
+    const cliTool: Tool = {
+      name: "cli_tool",
+      description: "CLI test tool",
+      inputs: { type: "object", properties: {} },
+      outputs: { type: "object", properties: {} },
+      tags: [],
+      tool_call_template: {
+        name: "cli_provider",
+        call_template_type: "cli",
+        commands: [{ command: "echo test" }],
+      } as CliCallTemplate,
+    };
+
+    const manual: UtcpManual = { utcp_version: "1.0", manual_version: "1.0", tools: [cliTool] };
+    const mockHttpProtocol = new MockCommunicationProtocol(manual);
+    const mockCliProtocol = new MockCommunicationProtocol(undefined, "cli_result");
+    CommunicationProtocol.communicationProtocols["http"] = mockHttpProtocol;
+    CommunicationProtocol.communicationProtocols["cli"] = mockCliProtocol;
+
+    const client = await UtcpClient.create(process.cwd(), {});
+
+    const result = await client.registerManual({
+      name: "http_manual",
+      call_template_type: "http",
+      url: "https://api.example.com/tool",
+      http_method: "POST",
+      content_type: "application/json",
+      allowed_communication_protocols: [], // Empty list defaults to ["http"]
+    } as HttpCallTemplate);
+
+    // CLI tool should be filtered out during registration
+    expect(result.manual.tools.length).toBe(0);
 
     await client.close();
   });

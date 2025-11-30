@@ -22,6 +22,7 @@ export interface TextCallTemplate extends CallTemplate {
   base_url?: string;
   auth?: undefined;
   auth_tools?: Auth | null;
+  allowed_communication_protocols?: string[];
 }
 
 /**
@@ -40,6 +41,7 @@ export const TextCallTemplateSchema: z.ZodType<TextCallTemplate> = z.object({
     }
     return val as Auth;
   }).describe('Optional authentication to apply to generated tools from OpenAPI specs'),
+  allowed_communication_protocols: z.array(z.string()).optional().describe('Optional list of allowed communication protocol types for tools within this manual.'),
 }).strict() as z.ZodType<TextCallTemplate>;
 
 /**
@@ -54,6 +56,7 @@ export class TextCallTemplateSerializer extends Serializer<TextCallTemplate> {
       base_url: obj.base_url,
       auth: obj.auth,
       auth_tools: obj.auth_tools ? new AuthSerializer().toDict(obj.auth_tools) : null,
+      allowed_communication_protocols: obj.allowed_communication_protocols,
     };
   }
 
