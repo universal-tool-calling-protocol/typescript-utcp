@@ -35,6 +35,7 @@ export interface StreamableHttpCallTemplate extends CallTemplate {
   headers?: Record<string, string>;
   body_field?: string | null;
   header_fields?: string[] | null;
+  allowed_communication_protocols?: string[];
 }
 
 /**
@@ -52,6 +53,7 @@ export const StreamableHttpCallTemplateSchema: z.ZodType<StreamableHttpCallTempl
   headers: z.record(z.string(), z.string()).optional().describe('Optional static headers to include in requests.'),
   body_field: z.string().nullable().optional().describe('The name of the single input field to be sent as the request body.'),
   header_fields: z.array(z.string()).nullable().optional().describe('List of input fields to be sent as request headers.'),
+  allowed_communication_protocols: z.array(z.string()).optional().describe('Optional list of allowed communication protocol types for tools within this manual.'),
 }) as z.ZodType<StreamableHttpCallTemplate>;
 
 /**
@@ -76,6 +78,7 @@ export class StreamableHttpCallTemplateSerializer extends Serializer<StreamableH
       headers: obj.headers,
       body_field: obj.body_field,
       header_fields: obj.header_fields,
+      allowed_communication_protocols: obj.allowed_communication_protocols,
     };
   }
 

@@ -162,6 +162,7 @@ export interface CliCallTemplate extends CallTemplate {
   env_vars?: Record<string, string> | null;
   working_dir?: string | null;
   auth?: undefined;
+  allowed_communication_protocols?: string[];
 }
 
 /**
@@ -174,6 +175,7 @@ export const CliCallTemplateSchema: z.ZodType<CliCallTemplate> = z.object({
   env_vars: z.record(z.string(), z.string()).nullable().optional().describe('Environment variables to set when executing the commands'),
   working_dir: z.string().nullable().optional().describe('Working directory for command execution'),
   auth: z.undefined().optional(),
+  allowed_communication_protocols: z.array(z.string()).optional().describe('Optional list of allowed communication protocol types for tools within this manual.'),
 }).strict() as z.ZodType<CliCallTemplate>;
 
 /**
@@ -200,6 +202,7 @@ export class CliCallTemplateSerializer extends Serializer<CliCallTemplate> {
       env_vars: obj.env_vars,
       working_dir: obj.working_dir,
       auth: obj.auth,
+      allowed_communication_protocols: obj.allowed_communication_protocols,
     };
   }
 

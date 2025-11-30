@@ -23,6 +23,7 @@ export interface FileCallTemplate extends CallTemplate {
   file_path: string;
   auth?: undefined;
   auth_tools?: Auth | null;
+  allowed_communication_protocols?: string[];
 }
 
 /**
@@ -40,6 +41,7 @@ export const FileCallTemplateSchema: z.ZodType<FileCallTemplate> = z.object({
     }
     return val as Auth;
   }).describe('Authentication to apply to generated tools from OpenAPI specs.'),
+  allowed_communication_protocols: z.array(z.string()).optional().describe('Optional list of allowed communication protocol types for tools within this manual.'),
 }).strict() as z.ZodType<FileCallTemplate>;
 
 /**
@@ -58,6 +60,7 @@ export class FileCallTemplateSerializer extends Serializer<FileCallTemplate> {
       file_path: obj.file_path,
       auth: obj.auth,
       auth_tools: obj.auth_tools ? new AuthSerializer().toDict(obj.auth_tools) : null,
+      allowed_communication_protocols: obj.allowed_communication_protocols,
     };
   }
 

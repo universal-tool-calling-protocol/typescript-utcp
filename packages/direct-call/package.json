@@ -1,6 +1,6 @@
 {
   "name": "@utcp/direct-call",
-  "version": "1.0.12",
+  "version": "1.1.0",
   "description": "Direct callable functions plugin for UTCP",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -44,7 +44,7 @@
     }
   },
   "dependencies": {
-    "@utcp/sdk": "^1.0.15"
+    "@utcp/sdk": "^1.1.0"
   },
   "devDependencies": {
     "bun-types": "latest",

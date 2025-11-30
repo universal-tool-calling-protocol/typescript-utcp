@@ -23,6 +23,18 @@ export interface CallTemplate {
    */
   auth?: Auth;
 
+  /**
+   * Optional list of allowed communication protocol types for tools within this manual.
+   * 
+   * Behavior:
+   * - If undefined, null, or empty array → defaults to only allowing the manual's own call_template_type
+   * - If set to a non-empty array → only those protocol types are allowed
+   * 
+   * This provides secure-by-default behavior where a manual can only register/call tools
+   * that use its own protocol unless explicitly configured otherwise.
+   */
+  allowed_communication_protocols?: string[];
+
   [key: string]: any;
 }
 

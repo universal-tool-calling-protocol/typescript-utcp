@@ -17,6 +17,7 @@ export interface DirectCallTemplate extends CallTemplate {
   call_template_type: 'direct-call';
   callable_name: string;
   auth?: undefined;
+  allowed_communication_protocols?: string[];
 }
 
 /**
@@ -27,6 +28,7 @@ export const DirectCallTemplateSchema: z.ZodType<DirectCallTemplate> = z.object(
   call_template_type: z.literal('direct-call'),
   callable_name: z.string().describe('The name of the callable function to invoke.'),
   auth: z.undefined().optional(),
+  allowed_communication_protocols: z.array(z.string()).optional().describe('Optional list of allowed communication protocol types for tools within this manual.'),
 }).strict() as z.ZodType<DirectCallTemplate>;
 
 /**
@@ -42,6 +44,7 @@ export class DirectCallTemplateSerializer extends Serializer<DirectCallTemplate>
       call_template_type: obj.call_template_type,
       callable_name: obj.callable_name,
       auth: obj.auth,
+      allowed_communication_protocols: obj.allowed_communication_protocols,
     };
   }
 

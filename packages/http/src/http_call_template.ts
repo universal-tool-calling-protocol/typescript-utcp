@@ -22,6 +22,7 @@ export interface HttpCallTemplate extends CallTemplate {
   body_field?: string;
   header_fields?: string[];
   auth_tools?: Auth | null;
+  allowed_communication_protocols?: string[];
 }
 
 /**
@@ -45,6 +46,7 @@ export const HttpCallTemplateSchema: z.ZodType<HttpCallTemplate> = z.object({
     }
     return val as Auth;
   }).describe('Authentication configuration for generated tools'),
+  allowed_communication_protocols: z.array(z.string()).optional().describe('Optional list of allowed communication protocol types for tools within this manual.'),
 }) as z.ZodType<HttpCallTemplate>;
 
 /**
@@ -64,6 +66,7 @@ export class HttpCallTemplateSerializer extends Serializer<HttpCallTemplate> {
       headers: obj.headers,
       body_field: obj.body_field,
       header_fields: obj.header_fields,
+      allowed_communication_protocols: obj.allowed_communication_protocols,
     };
   }
 
