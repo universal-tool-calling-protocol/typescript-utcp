@@ -22,6 +22,7 @@ export interface McpStdioServer {
   args: string[];
   cwd?: string;
   env: Record<string, string>;
+  timeout: number;
 }
 
 /**
@@ -33,6 +34,7 @@ export const McpStdioServerSchema: z.ZodType<McpStdioServer> = z.object({
   args: z.array(z.string()).optional().default([]).describe('Arguments to pass to the command.'),
   cwd: z.string().optional().describe('Working directory for the command.'),
   env: z.record(z.string(), z.string()).optional().default({}).describe('Environment variables for the command.'),
+  timeout: z.number().optional().default(30).describe('Timeout for MCP operations in seconds.'),
 }) as z.ZodType<McpStdioServer>;
 
 

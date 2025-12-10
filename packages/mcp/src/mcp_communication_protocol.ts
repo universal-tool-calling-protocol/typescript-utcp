@@ -169,26 +169,28 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     operation: (client: McpClient) => Promise<T>
   ): Promise<T> {
     const sessionKey = `${serverName}:${serverConfig.transport}`;
+    // Use configured timeout (in seconds) or default to 30s
+    const timeoutMs = (serverConfig.timeout ?? 30) * 1000;
     try {
       const client = await this._getOrCreateSession(serverName, serverConfig, auth);
       return await Promise.race([
         operation(client),
-        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after 15s.`)), 15000))
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after ${timeoutMs / 1000}s.`)), timeoutMs))
       ]);
     } catch (e: any) {
       this._logError(`MCP operation on '${sessionKey}' failed:`, e.message);
-      
+
       const errorMsg = String((e as any)?.message ?? e).toLowerCase();
       // Check for connection errors or "already initialized" errors
-      if (errorMsg.includes('closed') || errorMsg.includes('disconnected') || 
+      if (errorMsg.includes('closed') || errorMsg.includes('disconnected') ||
           errorMsg.includes('econnreset') || errorMsg.includes('etimedout') ||
           errorMsg.includes('already initialized')) {
         this._logInfo(`Connection/initialization error detected on '${sessionKey}'. Cleaning up and retrying once...`);
         await this._cleanupSession(sessionKey);
         const newClient = await this._getOrCreateSession(serverName, serverConfig, auth);
-        return await Promise.race([operation(newClient), new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after 15s.`)), 15000))]);
+        return await Promise.race([operation(newClient), new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after ${timeoutMs / 1000}s.`)), timeoutMs))]);
       }
-      
+
       throw e;
     }
   }
