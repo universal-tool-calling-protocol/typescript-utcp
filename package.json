@@ -18,7 +18,7 @@
   },
   "scripts": {
     "clean": "rm -rf packages/*/dist || rmdir /s /q packages\\*\\dist || true",
-    "build": "bun run build:core && bun run build:http && bun run build:mcp && bun run build:text && bun run build:file && bun run build:cli && bun run build:direct-call && bun run build:dotenv-loader && bun run build:code-mode",
+    "build": "bun run build:core && bun run build:http && bun run build:mcp && bun run build:text && bun run build:file && bun run build:cli && bun run build:direct-call && bun run build:dotenv-loader",
     "build:core": "cd packages/core && bun run build",
     "build:http": "cd packages/http && bun run build",
     "build:mcp": "cd packages/mcp && bun run build",
@@ -27,7 +27,6 @@
     "build:cli": "cd packages/cli && bun run build",
     "build:direct-call": "cd packages/direct-call && bun run build",
     "build:dotenv-loader": "cd packages/dotenv-loader && bun run build",
-    "build:code-mode": "cd packages/code-mode && bun run build",
     "rebuild": "bun run clean && bun run build",
     "test": "bun test --config tsconfig.test.json",
     "version:patch": "node scripts/update-versions.js patch",
@@ -42,8 +41,7 @@
     "publish:cli": "cd packages/cli && npm publish",
     "publish:direct-call": "cd packages/direct-call && npm publish",
     "publish:dotenv-loader": "cd packages/dotenv-loader && npm publish",
-    "publish:code-mode": "cd packages/code-mode && npm publish",
-    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:file && bun run publish:http && bun run publish:mcp && bun run publish:cli && bun run publish:direct-call && bun run publish:dotenv-loader && bun run publish:code-mode"
+    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:file && bun run publish:http && bun run publish:mcp && bun run publish:cli && bun run publish:direct-call && bun run publish:dotenv-loader"
   },
   "workspaces": [
     "packages/*"
