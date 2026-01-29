@@ -29,13 +29,13 @@ Install UTCP packages from npm:
 
 ```bash
 # Install core SDK and desired protocol plugins
-npm install @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file @utcp/code-mode
+npm install @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file
 
 # Optional: Add dotenv variable loader for Node.js
 npm install @utcp/dotenv-loader
 
 # Or using bun
-bun add @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file @utcp/code-mode
+bun add @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file
 ```
 
 ### For Development
@@ -440,7 +440,9 @@ const cliTemplate = serializer.validateDict({
 });
 ```
 
-## Code Execution Mode
+## Code Execution Mode 
+
+Implementation moved to https://github.com/universal-tool-calling-protocol/code-mode/tree/main/typescript-library
 
 The `@utcp/code-mode` package provides a powerful extension that allows executing TypeScript code with direct access to registered tools, perfect for AI agents and complex workflows:
 
@@ -525,7 +527,6 @@ typescript-utcp/
 │   ├── mcp/           # MCP protocol plugin
 │   ├── text/          # Text/string content protocol plugin (browser-compatible)
 │   ├── file/          # File system protocol plugin (Node.js only)
-│   ├── code-mode/     # TypeScript code execution with hierarchical tool access
 │   ├── dotenv-loader/ # DotEnv variable loader plugin (Node.js only)
 │   ├── direct-call/   # Direct call protocol plugin
 │   └── cli/           # CLI protocol plugin
@@ -539,7 +540,6 @@ Each package is independently published to npm:
 - `@utcp/mcp` - MCP protocol support
 - `@utcp/text` - Direct text/string content (browser-compatible)
 - `@utcp/file` - File system operations (Node.js only)
-- `@utcp/code-mode` - TypeScript code execution with hierarchical tool access
 - `@utcp/dotenv-loader` - DotEnv variable loader (Node.js only)
 - `@utcp/direct-call` - Direct function call protocol
 - `@utcp/cli` - Command-line tools
