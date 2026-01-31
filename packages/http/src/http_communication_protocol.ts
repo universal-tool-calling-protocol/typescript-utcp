@@ -90,7 +90,8 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         this._logInfo(`Assuming OpenAPI spec from '${httpCallTemplate.name}'. Converting to UTCP manual.`);
         const converter = new OpenApiConverter(responseData, {
           specUrl: httpCallTemplate.url,
-          callTemplateName: httpCallTemplate.name
+          callTemplateName: httpCallTemplate.name,
+          authTools: httpCallTemplate.auth_tools
         });
         utcpManual = converter.convert();
       } else {

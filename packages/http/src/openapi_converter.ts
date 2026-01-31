@@ -32,7 +32,13 @@ import { HttpCallTemplate } from './http_call_template';
 export interface OpenApiConverterOptions {
   specUrl?: string;
   callTemplateName?: string;
-  authTools?: Auth;
+  /**
+   * Authentication configuration for generated tools.
+   * - undefined: Auto-generate placeholder auth from OpenAPI security schemes
+   * - null: Explicitly disable auth for all generated tools
+   * - Auth object: Use the provided auth configuration
+   */
+  authTools?: Auth | null;
   baseUrl?: string;
 }
 
@@ -49,7 +55,7 @@ export class OpenApiConverter {
   private spec: Record<string, any>;
   private spec_url: string | undefined;
   private base_url: string | undefined;
-  private auth_tools: Auth | undefined;
+  private auth_tools: Auth | null | undefined;
   private placeholder_counter: number = 0;
   private call_template_name: string;
 
@@ -410,6 +416,11 @@ export class OpenApiConverter {
    * @returns An Auth object or undefined if no authentication is specified.
    */
   private _extractAuth(operation: Record<string, any>): Auth | undefined {
+    // If auth_tools is explicitly set to null, disable auth for all tools
+    if (this.auth_tools === null) {
+      return undefined;
+    }
+
     // First check for operation-level security requirements
     let securityRequirements = operation.security || [];
     
