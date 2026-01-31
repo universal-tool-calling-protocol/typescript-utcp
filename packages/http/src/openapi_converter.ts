@@ -40,6 +40,11 @@ export interface OpenApiConverterOptions {
    */
   authTools?: Auth | null;
   baseUrl?: string;
+  /**
+   * Static headers to include in all generated tool call templates.
+   * These headers will be sent with every tool request.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -56,6 +61,7 @@ export class OpenApiConverter {
   private spec_url: string | undefined;
   private base_url: string | undefined;
   private auth_tools: Auth | null | undefined;
+  private headers: Record<string, string> | undefined;
   private placeholder_counter: number = 0;
   private call_template_name: string;
 
@@ -74,6 +80,7 @@ export class OpenApiConverter {
     this.spec_url = options?.specUrl;
     this.base_url = options?.baseUrl;
     this.auth_tools = options?.authTools;
+    this.headers = options?.headers;
     this.placeholder_counter = 0;
 
     let callTemplateName = options?.callTemplateName;
@@ -254,6 +261,7 @@ export class OpenApiConverter {
       url: fullUrl,
       body_field: bodyField ?? undefined,
       header_fields: headerFields.length > 0 ? headerFields : undefined,
+      headers: this.headers,
       auth,
       content_type: 'application/json',
       timeout: 30

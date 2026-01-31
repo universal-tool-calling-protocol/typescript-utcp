@@ -91,7 +91,8 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         const converter = new OpenApiConverter(responseData, {
           specUrl: httpCallTemplate.url,
           callTemplateName: httpCallTemplate.name,
-          authTools: httpCallTemplate.auth_tools
+          authTools: httpCallTemplate.auth_tools,
+          headers: httpCallTemplate.headers
         });
         utcpManual = converter.convert();
       } else {
