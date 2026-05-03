@@ -162,6 +162,14 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     return mcpClient;
   }
   
+  /**
+   * Returns the configured timeout for an MCP server in milliseconds.
+   * Defaults to 30 seconds when not specified.
+   */
+  private _getTimeoutMs(serverConfig: McpServerConfig): number {
+    return (serverConfig.timeout ?? 30) * 1000;
+  }
+
   private async _withSession<T>(
     serverName: string,
     serverConfig: McpServerConfig,
@@ -169,8 +177,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     operation: (client: McpClient) => Promise<T>
   ): Promise<T> {
     const sessionKey = `${serverName}:${serverConfig.transport}`;
-    // Use configured timeout (in seconds) or default to 30s
-    const timeoutMs = (serverConfig.timeout ?? 30) * 1000;
+    const timeoutMs = this._getTimeoutMs(serverConfig);
     try {
       const client = await this._getOrCreateSession(serverName, serverConfig, auth);
       return await Promise.race([
@@ -211,8 +218,9 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     for (const [serverName, serverConfig] of Object.entries(mcpCallTemplate.config.mcpServers)) {
       try {
         this._logInfo(`Discovering tools from MCP server '${serverName}'...`);
+        const requestTimeout = this._getTimeoutMs(serverConfig);
         const mcpToolsResult = await this._withSession(serverName, serverConfig, mcpCallTemplate.auth,
-          (client) => client.listTools()
+          (client) => client.listTools(undefined, { timeout: requestTimeout })
         );
 
         if (!isMcpToolsResponse(mcpToolsResult)) {
@@ -292,8 +300,9 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     }
 
     this._logInfo(`Calling tool '${actualToolName}' on MCP server '${serverName}'...`);
+    const requestTimeout = this._getTimeoutMs(serverConfig);
     const result = await this._withSession(serverName, serverConfig, mcpCallTemplate.auth,
-      (client) => client.callTool({ name: actualToolName, arguments: toolArgs })
+      (client) => client.callTool({ name: actualToolName, arguments: toolArgs }, undefined, { timeout: requestTimeout })
     );
 
     return this._processMcpToolResult(result);
