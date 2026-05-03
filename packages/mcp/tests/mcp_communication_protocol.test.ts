@@ -247,4 +247,36 @@ describe("McpCommunicationProtocol", () => {
         ).rejects.toThrow("Configuration for MCP server 'unknown_server' not found in manual 'mock_http_manual'.");
     }, 10000);
   });
+
+  describe("Timeout forwarding", () => {
+    test("forwards configured timeout to listTools and callTool", async () => {
+      const capturedOpts: any[] = [];
+      const fakeClient = {
+        listTools: (_params: any, opts: any) => {
+          capturedOpts.push({ method: "listTools", opts });
+          return Promise.resolve({ tools: [{ name: "t", description: "", inputSchema: {}, outputSchema: {} }] });
+        },
+        callTool: (_params: any, _result: any, opts: any) => {
+          capturedOpts.push({ method: "callTool", opts });
+          return Promise.resolve({ content: [{ type: "text", text: "ok" }] });
+        },
+      };
+
+      const protocol = new McpCommunicationProtocol();
+      (protocol as any)._getOrCreateSession = () => Promise.resolve(fakeClient);
+
+      const template: McpCallTemplate = {
+        name: "m",
+        call_template_type: "mcp",
+        config: { mcpServers: { s: { transport: "stdio" as const, command: "true", timeout: 90 } } },
+      };
+
+      await protocol.registerManual(mockClient, template);
+      await protocol.callTool(mockClient, "s.t", {}, template);
+
+      expect(capturedOpts).toHaveLength(2);
+      expect(capturedOpts[0]).toEqual({ method: "listTools", opts: { timeout: 90_000 } });
+      expect(capturedOpts[1]).toEqual({ method: "callTool", opts: { timeout: 90_000 } });
+    });
+  });
 });
