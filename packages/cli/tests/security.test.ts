@@ -55,24 +55,40 @@ const isWindows = process.platform === 'win32';
 
 describe('_substitute_utcp_args context-aware emission', () => {
   if (isWindows) {
-    test('PowerShell: bare placeholder emits $env:VAR', () => {
+    test('PowerShell: bare placeholder emits ${env:VAR} (braced form, var-name boundary safe)', () => {
       const { command, env } = proto._substitute_utcp_args(
         'mytool UTCP_ARG_x_UTCP_END',
         { x: 'a b' },
         NONCE,
       );
-      expect(command).toBe(`mytool $env:${expectedVar('x')}`);
+      expect(command).toBe(`mytool \${env:${expectedVar('x')}}`);
       expect(env[expectedVar('x')]).toBe('a b');
     });
 
-    test('PowerShell: placeholder inside double-quoted string emits $env:VAR (PS expands inside dq)', () => {
+    test('PowerShell: placeholder inside double-quoted string emits ${env:VAR} (PS expands inside dq)', () => {
       const { command, env } = proto._substitute_utcp_args(
         'Write-Output "Hi UTCP_ARG_x_UTCP_END!"',
         { x: 'a; rm /' },
         NONCE,
       );
-      expect(command).toBe(`Write-Output "Hi $env:${expectedVar('x')}!"`);
+      expect(command).toBe(`Write-Output "Hi \${env:${expectedVar('x')}}!"`);
       expect(env[expectedVar('x')]).toBe('a; rm /');
+    });
+
+    test('PowerShell: alphanumeric suffix does not extend the env var name', () => {
+      // Regression: with the bare `$env:VAR` form, an alphanumeric or
+      // underscore suffix in the template would be parsed as part of
+      // the env var name. The braced form `${env:VAR}` closes the
+      // boundary cleanly so the template suffix stays literal.
+      const { command, env } = proto._substitute_utcp_args(
+        'Write-Output "URL=UTCP_ARG_id_UTCP_END123suffix"',
+        { id: 'abc' },
+        NONCE,
+      );
+      expect(command).toBe(
+        `Write-Output "URL=\${env:${expectedVar('id')}}123suffix"`,
+      );
+      expect(env[expectedVar('id')]).toBe('abc');
     });
 
     test('PowerShell: placeholder inside single-quoted string throws with clear message', () => {
@@ -92,7 +108,9 @@ describe('_substitute_utcp_args context-aware emission', () => {
         NONCE,
       );
       // The dq state must still be active when the placeholder is hit.
-      expect(command).toBe(`Write-Output "pre \`"x\`" $env:${expectedVar('a')}"`);
+      expect(command).toBe(
+        `Write-Output "pre \`"x\`" \${env:${expectedVar('a')}}"`,
+      );
     });
   } else {
     test('bash: bare placeholder emits "$VAR" (quoted to prevent word-splitting)', () => {

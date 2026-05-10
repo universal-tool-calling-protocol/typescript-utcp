@@ -248,8 +248,12 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
    *                                                as a single token)
    *
    *   powershell (Windows):
-   *     - bare:                   `$env:VAR`
-   *     - inside double quotes:   `$env:VAR`      (PS expands inside dq)
+   *     - bare:                   `${env:VAR}`
+   *     - inside double quotes:   `${env:VAR}`    (PS expands inside dq;
+   *                                                braced form prevents
+   *                                                suffix characters
+   *                                                from being consumed
+   *                                                into the var name)
    *     - inside single quotes:   error -- PS does not expand inside
    *                                        single-quoted strings, so
    *                                        we cannot safely substitute
@@ -403,7 +407,15 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
         const v = collect(m[1]);
         // Both bare and dq accept `$env:VAR` -- PowerShell expands it
         // inside double-quoted strings.
-        out.push(`$env:${v}`);
+        // Use the braced form `${env:VAR}` rather than `$env:VAR` so
+        // the variable name is explicitly delimited. The bare form lets
+        // PowerShell's lexer keep consuming alphanumerics + `_` until
+        // it hits a non-identifier char, which would silently swallow
+        // any suffix text in the template (e.g. template
+        // `"URL=UTCP_ARG_id_UTCP_END123"` would substitute as
+        // `"URL=$env:__UTCP_ARG_<nonce>_id123"` and resolve an env var
+        // that does not exist). Braces close that boundary cleanly.
+        out.push(`\${env:${v}}`);
         i += m[0].length;
         continue;
       }
