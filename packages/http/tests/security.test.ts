@@ -124,4 +124,79 @@ describe('OpenApiConverter SSRF defense', () => {
     const manual = converter.convert();
     expect(manual.tools.length).toBe(1);
   });
+
+  // Regression tests for the OpenAPI-2.0 / spec_url-fallback bypass:
+  // the original fix only ran the loopback check inside the OpenAPI 3.0
+  // `servers` branch, so an attacker could ship the same SSRF payload
+  // via OpenAPI 2.0's `host` field or by omitting `servers`/`host` and
+  // letting the converter fall back to the spec_url itself.
+
+  function specV2WithHost(host: string, scheme: string = 'http') {
+    return {
+      swagger: '2.0',
+      info: { title: 'T', version: '1' },
+      host,
+      schemes: [scheme],
+      basePath: '/',
+      paths: {
+        '/x': {
+          get: {
+            operationId: 'x',
+            responses: { '200': { description: 'ok' } },
+          },
+        },
+      },
+    };
+  }
+
+  test('rejects loopback host in OpenAPI 2.0 spec from a remote source', () => {
+    const converter = new OpenApiConverter(specV2WithHost('127.0.0.1:9090'), {
+      specUrl: 'https://attacker.example/swagger.json',
+    });
+    expect(() => converter.convert()).toThrow(/loopback/);
+    expect(() => converter.convert()).toThrow(/GHSA-39j6-4867-gg4w/);
+  });
+
+  test('rejects "localhost" host in OpenAPI 2.0 spec from a remote source', () => {
+    const converter = new OpenApiConverter(specV2WithHost('localhost'), {
+      specUrl: 'https://attacker.example/swagger.json',
+    });
+    expect(() => converter.convert()).toThrow(/loopback/);
+  });
+
+  test('allows loopback host in OpenAPI 2.0 spec from a loopback source (local-dev)', () => {
+    const converter = new OpenApiConverter(specV2WithHost('127.0.0.1:9090'), {
+      specUrl: 'http://localhost:8000/swagger.json',
+    });
+    const manual = converter.convert();
+    expect(manual.tools.length).toBe(1);
+  });
+
+  test('explicit base_url override bypasses the check for OpenAPI 2.0', () => {
+    const converter = new OpenApiConverter(specV2WithHost('127.0.0.1:9090'), {
+      specUrl: 'https://attacker.example/swagger.json',
+      baseUrl: 'http://127.0.0.1:9090',
+    });
+    const manual = converter.convert();
+    expect(manual.tools.length).toBe(1);
+  });
+
+  test('spec without servers/host/baseUrl falling back to a loopback spec_url is fine', () => {
+    // The fallback branch derives baseUrl from spec_url itself, so by
+    // construction it cannot be the SSRF redirect pattern -- there is
+    // nothing the spec author can change to point elsewhere. This is
+    // the local-dev case.
+    const spec = {
+      openapi: '3.0.0',
+      info: { title: 'T' },
+      paths: {
+        '/x': { get: { operationId: 'x', responses: { '200': { description: 'ok' } } } },
+      },
+    };
+    const converter = new OpenApiConverter(spec, {
+      specUrl: 'http://localhost:8000/openapi.json',
+    });
+    const manual = converter.convert();
+    expect(manual.tools.length).toBe(1);
+  });
 });
