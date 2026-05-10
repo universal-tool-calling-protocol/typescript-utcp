@@ -82,8 +82,15 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
     'PATH', 'PATHEXT', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC',
     'TEMP', 'TMP', 'USERPROFILE', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME',
     'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
+    'ALLUSERSPROFILE', 'PUBLIC',
     'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'OS',
-    'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+    'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER',
+    'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'NUMBER_OF_PROCESSORS',
+    // PowerShell + login session bits. Without PSMODULEPATH in
+    // particular, powershell.exe has to enumerate module roots from
+    // scratch on first use, which can cost 5-15s on CI runners and
+    // silently push the discovery flow past its timeout.
+    'PSMODULEPATH', 'LOGONSERVER', 'SESSIONNAME', 'USERDNSDOMAIN',
   ];
 
   private _default_inherited_keys(): readonly string[] {
@@ -597,7 +604,11 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
       const { stdout, stderr, exitCode } = await this._executeShellScript(shellScript, {
         cwd: cliCallTemplate.working_dir || undefined,
         env,
-      }, 30000);
+        // 60s, not 30s: Windows PowerShell startup on CI runners can
+        // be slow (especially the first time in a session, before
+        // module path caches warm up). Discovery runs once per
+        // manual, so a generous ceiling here is cheap.
+      }, 60000);
 
       // Get output based on exit code
       const output = exitCode === 0 ? stdout : stderr;
