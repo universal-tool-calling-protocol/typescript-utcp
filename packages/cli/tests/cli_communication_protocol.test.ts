@@ -100,9 +100,8 @@ describe('CliCommunicationProtocol (Multi-Command)', () => {
         { command: 'echo "Received: $CMD_0_OUTPUT"' },
       ],
     });
-    
+
     const result = await cliProtocol.callTool(mockClient, 'test.args', { message: 'Workflow Argument' }, callTemplate);
-    // The argument is substituted directly without extra quoting
     expect(result.trim()).toContain('Received: Initial message: Workflow Argument');
   });
   
