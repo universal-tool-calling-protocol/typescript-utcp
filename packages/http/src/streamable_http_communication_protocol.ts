@@ -13,6 +13,7 @@ import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { StreamableHttpCallTemplate } from './streamable_http_call_template';
+import { ensureSecureUrl } from './_security';
 
 /**
  * REQUIRED
@@ -82,17 +83,8 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     const provider = manualCallTemplate as StreamableHttpCallTemplate;
     const url = provider.url;
 
-    // Security check: Enforce HTTPS or localhost to prevent MITM attacks
-    if (
-      !url.startsWith('https://') &&
-      !url.startsWith('http://localhost') &&
-      !url.startsWith('http://127.0.0.1')
-    ) {
-      throw new Error(
-        `Security error: URL must use HTTPS or start with 'http://localhost' or 'http://127.0.0.1'. Got: ${url}. ` +
-          'Non-secure URLs are vulnerable to man-in-the-middle attacks.'
-      );
-    }
+    // Security check: only HTTPS or loopback HTTP allowed for manual discovery.
+    ensureSecureUrl(url, 'manual discovery');
 
     this._logInfo(`Discovering tools from '${provider.name}' (HTTP Stream) at ${url}`);
 

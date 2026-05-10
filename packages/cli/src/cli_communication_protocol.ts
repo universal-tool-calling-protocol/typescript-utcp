@@ -28,6 +28,7 @@ import { CliCallTemplate, CliCallTemplateSchema, CommandStep } from './cli_call_
 import { spawn, ChildProcess } from 'child_process';
 import { clearTimeout } from 'timers';
 import { Readable } from 'stream';
+import { randomBytes } from 'crypto';
 
 /**
  * REQUIRED
@@ -55,19 +56,97 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
   }
 
   /**
+   * Default set of host environment variables propagated to the CLI
+   * subprocess when `CliCallTemplate.inherit_env_vars` is not provided
+   * (i.e. undefined / null). Locating binaries (`PATH` / `PATHEXT`),
+   * basic shell + locale state, and Windows runtime paths are needed for
+   * almost any tool to start. Anything else (cloud creds, API keys,
+   * internal tokens) must be opted in by listing the variable name in
+   * `inherit_env_vars`, or its value provided in `env_vars`.
+   *
+   * If `inherit_env_vars === []`, the caller is opting into strict mode
+   * and NOTHING is inherited from the host -- only `env_vars` reaches
+   * the subprocess.
+   *
+   * Backs GHSA-r8j5-8747-88cm (sister advisory of python-utcp's
+   * GHSA-5v57-8rxj-3p2r): the previous implementation handed the full
+   * `process.env` to the subprocess, which combined with the command
+   * injection in `_substitute_utcp_args` let an attacker exfiltrate
+   * every secret in the host process.
+   */
+  private static readonly _DEFAULT_INHERITED_KEYS_UNIX: readonly string[] = [
+    'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME',
+    'SHELL', 'TZ', 'TERM',
+  ];
+  private static readonly _DEFAULT_INHERITED_KEYS_WINDOWS: readonly string[] = [
+    'PATH', 'PATHEXT', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC',
+    'TEMP', 'TMP', 'USERPROFILE', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME',
+    'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
+    'ALLUSERSPROFILE', 'PUBLIC',
+    'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'OS',
+    'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER',
+    'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'NUMBER_OF_PROCESSORS',
+    // PowerShell + login session bits. Without PSMODULEPATH in
+    // particular, powershell.exe has to enumerate module roots from
+    // scratch on first use, which can cost 5-15s on CI runners and
+    // silently push the discovery flow past its timeout.
+    'PSMODULEPATH', 'LOGONSERVER', 'SESSIONNAME', 'USERDNSDOMAIN',
+  ];
+
+  private _default_inherited_keys(): readonly string[] {
+    return process.platform === 'win32'
+      ? CliCommunicationProtocol._DEFAULT_INHERITED_KEYS_WINDOWS
+      : CliCommunicationProtocol._DEFAULT_INHERITED_KEYS_UNIX;
+  }
+
+  /**
    * Prepare environment variables for command execution.
-   * 
+   *
+   * Composes the subprocess environment with one layer of host
+   * inheritance (controlled by `provider.inherit_env_vars`) plus
+   * `provider.env_vars` on top:
+   *
+   *   - `inherit_env_vars` undefined / null (default): pass through the
+   *     built-in default allowlist of host vars (`PATH`, `HOME` /
+   *     `PATHEXT`, `SYSTEMROOT`, etc.) so normal shells and binaries
+   *     work without extra wiring.
+   *   - `inherit_env_vars === []`: strict mode. Nothing from the host
+   *     environment reaches the subprocess -- only `env_vars`.
+   *   - `inherit_env_vars === [...]`: pass through exactly the named
+   *     host variables. The default allowlist is NOT merged in, so
+   *     callers who still want `PATH` must include it explicitly.
+   *
+   * `env_vars` is always applied last and overrides anything inherited
+   * from the host.
+   *
    * @param provider The CLI provider
    * @returns Environment variables dictionary
    */
   private _prepare_environment(provider: CliCallTemplate): Record<string, string> {
-    const env = { ...process.env } as Record<string, string>;
-    
-    // Add custom environment variables if provided
-    if (provider.env_vars) {
-      Object.assign(env, provider.env_vars);
+    const inheritedKeys: readonly string[] =
+      provider.inherit_env_vars === undefined || provider.inherit_env_vars === null
+        ? this._default_inherited_keys()
+        : provider.inherit_env_vars;
+
+    const env: Record<string, string> = {};
+    for (const key of inheritedKeys) {
+      const value = process.env[key];
+      if (value !== undefined) {
+        env[key] = value;
+      }
     }
-    
+
+    // Caller-supplied variables override anything inherited from the
+    // host. Skip undefined values so they don't appear as the literal
+    // string "undefined" in the subprocess.
+    if (provider.env_vars) {
+      for (const [k, v] of Object.entries(provider.env_vars)) {
+        if (v !== undefined && v !== null) {
+          env[k] = String(v);
+        }
+      }
+    }
+
     return env;
   }
 
@@ -83,12 +162,14 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
     let childProcess: ChildProcess | undefined;
 
     try {
-      const currentProcessEnv = typeof process !== 'undefined' ? process.env : {};
-      const mergedEnv = { ...currentProcessEnv, ...options.env };
-
+      // IMPORTANT: do NOT merge `process.env` here. `_prepare_environment`
+      // is responsible for assembling the subprocess environment with the
+      // proper allowlist + caller-supplied overrides. Re-adding the full
+      // host environment at this layer would silently undo the
+      // restriction and re-introduce GHSA-r8j5-8747-88cm-style leaks.
       childProcess = spawn(shell, args, {
         cwd: options.cwd,
-        env: mergedEnv,
+        env: options.env,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
@@ -130,35 +211,296 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
   }
 
   /**
-   * Substitute UTCP_ARG placeholders in command string with tool arguments.
-   * 
-   * @param command Command string containing UTCP_ARG_argname_UTCP_END placeholders
-   * @param toolArgs Dictionary of argument names and values
-   * @returns Command string with placeholders replaced by actual values
+   * Generate an unguessable nonce that namespaces the env vars used for
+   * argument substitution within a single tool invocation. Prevents a
+   * template author from being able to write a literal
+   * `${__UTCP_ARG_<nonce>_<name>}` reference that collides with our
+   * substitution slot, which would re-introduce
+   * unquoted-variable-expansion injection.
    */
-  private _substitute_utcp_args(command: string, toolArgs: Record<string, any>): string {
-    const pattern = /UTCP_ARG_([a-zA-Z0-9_]+?)_UTCP_END/g;
-    return command.replace(pattern, (match, argName) => {
-      if (argName in toolArgs) {
-        // Return the raw value. The shell will handle it correctly when it's inside quotes
-        // in the final command (e.g., echo "Initial message: Workflow Argument").
-        return String(toolArgs[argName]);
+  private static _make_nonce(): string {
+    return randomBytes(8).toString('hex');
+  }
+
+  /**
+   * Compute the env-var name that carries one substituted tool_arg
+   * value into the subprocess. The nonce is fresh per invocation so
+   * `${__UTCP_ARG_<nonce>_<name>}` literals cannot exist in templates
+   * authored before invocation time.
+   */
+  private static _env_var_name(nonce: string, argName: string): string {
+    return `__UTCP_ARG_${nonce}_${argName}`;
+  }
+
+  /**
+   * Substitute `UTCP_ARG_<name>_UTCP_END` placeholders in a command
+   * string by emitting context-appropriate shell variable references
+   * and recording the actual values as env vars on the returned object.
+   * The caller wires those env vars into the subprocess (alongside the
+   * call template's `env_vars` and host-inheritance allowlist) so the
+   * shell expands them at runtime, AFTER it has already parsed the
+   * script. As a result, attacker-controlled `toolArgs` never get
+   * spliced into the script source and therefore cannot inject
+   * commands or escape any quoting context.
+   *
+   * Quote-state tracking ensures the emitted reference is correct for
+   * its surrounding context:
+   *
+   *   bash (Unix):
+   *     - bare:                   `"$VAR"`        (quoted: no word splitting)
+   *     - inside double quotes:   `${VAR}`        (bash expands inside dq)
+   *     - inside single quotes:   `'"$VAR"'`      (close sq, dq with var,
+   *                                                reopen sq -- bash treats
+   *                                                adjacent quoted regions
+   *                                                as a single token)
+   *
+   *   powershell (Windows):
+   *     - bare:                   `${env:VAR}`
+   *     - inside double quotes:   `${env:VAR}`    (PS expands inside dq;
+   *                                                braced form prevents
+   *                                                suffix characters
+   *                                                from being consumed
+   *                                                into the var name)
+   *     - inside single quotes:   error -- PS does not expand inside
+   *                                        single-quoted strings, so
+   *                                        we cannot safely substitute
+   *                                        without rewriting the entire
+   *                                        surrounding token. Author
+   *                                        must use a double-quoted
+   *                                        string.
+   *
+   * Backs the sister advisory of python-utcp's GHSA-33p6-5jxp-p3x4.
+   * An earlier fix that did inline `shlex.quote`-style substitution was
+   * still vulnerable when the placeholder sat inside a surrounding `"`
+   * region: e.g. template `curl "https://api/UTCP_ARG_id_UTCP_END"`
+   * with `id = '"; rm -rf /; "'` produced
+   * `curl "https://api/'"; rm -rf /; "'"`, where bash's parser closed
+   * the outer dq early and ran the injected commands.
+   *
+   * @param command  Command string containing UTCP_ARG_<name>_UTCP_END placeholders
+   * @param toolArgs Dictionary of argument names and values
+   * @param nonce    Per-invocation nonce used to namespace generated env vars
+   * @returns        { command, env } where `command` is safe to embed in a
+   *                 shell script and `env` is the additional env vars the
+   *                 subprocess must receive for the references to expand.
+   */
+  private _substitute_utcp_args(
+    command: string,
+    toolArgs: Record<string, any>,
+    nonce: string,
+  ): { command: string; env: Record<string, string> } {
+    return process.platform === 'win32'
+      ? this._substitute_powershell(command, toolArgs, nonce)
+      : this._substitute_bash(command, toolArgs, nonce);
+  }
+
+  private _substitute_bash(
+    command: string,
+    toolArgs: Record<string, any>,
+    nonce: string,
+  ): { command: string; env: Record<string, string> } {
+    const env: Record<string, string> = {};
+    const out: string[] = [];
+    const phRe = /^UTCP_ARG_([a-zA-Z0-9_]+?)_UTCP_END/;
+    let state: 'normal' | 'dq' | 'sq' = 'normal';
+    let i = 0;
+
+    const collect = (name: string): string => {
+      const v = CliCommunicationProtocol._env_var_name(nonce, name);
+      if (name in toolArgs) {
+        env[v] = String(toolArgs[name]);
+      } else {
+        this._log_error(`Missing argument '${name}' for placeholder in command: ${command}`);
+        env[v] = `MISSING_ARG_${name}`;
       }
-      this._log_error(`Missing argument '${argName}' for placeholder in command: ${command}`);
-      return `MISSING_ARG_${argName}`;
-    });
+      return v;
+    };
+
+    while (i < command.length) {
+      const m = command.slice(i).match(phRe);
+      if (m) {
+        const v = collect(m[1]);
+        if (state === 'normal') {
+          out.push(`"$${v}"`);
+        } else if (state === 'dq') {
+          out.push(`\${${v}}`);
+        } else {
+          // sq: break out, dq the var, reopen sq. Adjacent quoted
+          // regions concatenate into one token.
+          out.push(`'"$${v}"'`);
+        }
+        i += m[0].length;
+        continue;
+      }
+
+      const ch = command[i];
+      if (state === 'normal') {
+        if (ch === "'") {
+          state = 'sq';
+          out.push(ch);
+        } else if (ch === '"') {
+          state = 'dq';
+          out.push(ch);
+        } else if (ch === '\\' && i + 1 < command.length) {
+          out.push(ch);
+          out.push(command[i + 1]);
+          i += 2;
+          continue;
+        } else {
+          out.push(ch);
+        }
+      } else if (state === 'dq') {
+        if (ch === '\\' && i + 1 < command.length && '"\\$`\n'.includes(command[i + 1])) {
+          out.push(ch);
+          out.push(command[i + 1]);
+          i += 2;
+          continue;
+        }
+        if (ch === '"') {
+          state = 'normal';
+          out.push(ch);
+        } else {
+          out.push(ch);
+        }
+      } else {
+        // sq: only `'` ends the string. No expansion, no escapes.
+        if (ch === "'") {
+          state = 'normal';
+          out.push(ch);
+        } else {
+          out.push(ch);
+        }
+      }
+      i++;
+    }
+
+    return { command: out.join(''), env };
+  }
+
+  private _substitute_powershell(
+    command: string,
+    toolArgs: Record<string, any>,
+    nonce: string,
+  ): { command: string; env: Record<string, string> } {
+    const env: Record<string, string> = {};
+    const out: string[] = [];
+    const phRe = /^UTCP_ARG_([a-zA-Z0-9_]+?)_UTCP_END/;
+    let state: 'normal' | 'dq' | 'sq' = 'normal';
+    let i = 0;
+
+    const collect = (name: string): string => {
+      const v = CliCommunicationProtocol._env_var_name(nonce, name);
+      if (name in toolArgs) {
+        env[v] = String(toolArgs[name]);
+      } else {
+        this._log_error(`Missing argument '${name}' for placeholder in command: ${command}`);
+        env[v] = `MISSING_ARG_${name}`;
+      }
+      return v;
+    };
+
+    while (i < command.length) {
+      const m = command.slice(i).match(phRe);
+      if (m) {
+        if (state === 'sq') {
+          throw new Error(
+            `Placeholder UTCP_ARG_${m[1]}_UTCP_END appears inside a ` +
+              `PowerShell single-quoted string in command: ${command}\n` +
+              `PowerShell does not expand variables inside single quotes, ` +
+              `so this cannot be substituted safely. Use a double-quoted ` +
+              `string ("...") around the placeholder instead.`,
+          );
+        }
+        const v = collect(m[1]);
+        // Both bare and dq accept `$env:VAR` -- PowerShell expands it
+        // inside double-quoted strings.
+        // Use the braced form `${env:VAR}` rather than `$env:VAR` so
+        // the variable name is explicitly delimited. The bare form lets
+        // PowerShell's lexer keep consuming alphanumerics + `_` until
+        // it hits a non-identifier char, which would silently swallow
+        // any suffix text in the template (e.g. template
+        // `"URL=UTCP_ARG_id_UTCP_END123"` would substitute as
+        // `"URL=$env:__UTCP_ARG_<nonce>_id123"` and resolve an env var
+        // that does not exist). Braces close that boundary cleanly.
+        out.push(`\${env:${v}}`);
+        i += m[0].length;
+        continue;
+      }
+
+      const ch = command[i];
+      if (state === 'normal') {
+        if (ch === "'") {
+          state = 'sq';
+          out.push(ch);
+        } else if (ch === '"') {
+          state = 'dq';
+          out.push(ch);
+        } else if (ch === '`' && i + 1 < command.length) {
+          out.push(ch);
+          out.push(command[i + 1]);
+          i += 2;
+          continue;
+        } else {
+          out.push(ch);
+        }
+      } else if (state === 'dq') {
+        if (ch === '`' && i + 1 < command.length) {
+          out.push(ch);
+          out.push(command[i + 1]);
+          i += 2;
+          continue;
+        }
+        if (ch === '"') {
+          state = 'normal';
+          out.push(ch);
+        } else {
+          out.push(ch);
+        }
+      } else {
+        // PS sq: `''` is an escaped single quote inside the literal.
+        if (ch === "'" && i + 1 < command.length && command[i + 1] === "'") {
+          out.push(ch);
+          out.push(command[i + 1]);
+          i += 2;
+          continue;
+        }
+        if (ch === "'") {
+          state = 'normal';
+          out.push(ch);
+        } else {
+          out.push(ch);
+        }
+      }
+      i++;
+    }
+
+    return { command: out.join(''), env };
   }
   
   /**
    * Build a combined shell script from multiple commands.
-   * 
+   *
+   * Returns both the script and the env-var contributions accumulated
+   * across all command steps. Callers must merge these env vars into
+   * the subprocess environment so the placeholder references the
+   * script writes (`$VAR` / `${VAR}` / `$env:VAR`) actually resolve to
+   * the original tool_arg values at runtime.
+   *
    * @param commands List of CommandStep objects to combine
    * @param toolArgs Tool arguments for placeholder substitution
-   * @returns Shell script string that executes all commands in sequence
+   * @returns        { script, env } — script is the shell script source,
+   *                 env is the additional UTCP_ARG_* env vars to inject.
    */
-  private _build_combined_shell_script(commands: CommandStep[], toolArgs: Record<string, any>): string {
+  private _build_combined_shell_script(
+    commands: CommandStep[],
+    toolArgs: Record<string, any>,
+  ): { script: string; env: Record<string, string> } {
     const isWindows = process.platform === 'win32';
     const scriptLines: string[] = [];
+    const accumulatedEnv: Record<string, string> = {};
+    // One nonce per script -- shared across all command steps so the
+    // env-var contributions land in a consistent namespace.
+    const nonce = CliCommunicationProtocol._make_nonce();
 
     // Add error handling and setup
     if (isWindows) {
@@ -175,11 +517,17 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
     // Execute each command and store output in variables
     for (let i = 0; i < commands.length; i++) {
       const commandStep = commands[i];
-      // Substitute UTCP_ARG placeholders
-      const substitutedCommand = this._substitute_utcp_args(commandStep.command, toolArgs);
-      
+      // Substitute UTCP_ARG placeholders -- emits shell-variable
+      // references, contributes the actual values via env.
+      const { command: substitutedCommand, env: stepEnv } = this._substitute_utcp_args(
+        commandStep.command,
+        toolArgs,
+        nonce,
+      );
+      Object.assign(accumulatedEnv, stepEnv);
+
       const varName = `CMD_${i}_OUTPUT`;
-      
+
       if (isWindows) {
         // PowerShell - capture command output in variable
         scriptLines.push(`\$${varName} = ${substitutedCommand} 2>&1 | Out-String`);
@@ -194,12 +542,12 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
       const commandStep = commands[i];
       const isLastCommand = i === commands.length - 1;
       let shouldAppend = commandStep.append_to_final_output;
-      
+
       if (shouldAppend === null || shouldAppend === undefined) {
         // Default: only append the last command's output
         shouldAppend = isLastCommand;
       }
-      
+
       if (shouldAppend) {
         const varName = `CMD_${i}_OUTPUT`;
         if (isWindows) {
@@ -212,7 +560,7 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
       }
     }
 
-    return scriptLines.join('\n');
+    return { script: scriptLines.join('\n'), env: accumulatedEnv };
   }
 
   /**
@@ -241,15 +589,26 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
 
     try {
       // Execute commands using the same approach as call_tool but with no arguments
-      const env = this._prepare_environment(cliCallTemplate);
-      const shellScript = this._build_combined_shell_script(cliCallTemplate.commands, {});
-      
+      const baseEnv = this._prepare_environment(cliCallTemplate);
+      const { script: shellScript, env: argEnv } = this._build_combined_shell_script(
+        cliCallTemplate.commands,
+        {},
+      );
+      // Per-call UTCP_ARG_* env vars carry placeholder values; layer them
+      // on top of the inherited+caller-supplied env so the references
+      // emitted into the script actually resolve.
+      const env = { ...baseEnv, ...argEnv };
+
       this._log_info(`Executing shell script for tool discovery from provider '${manualCallTemplate.name}'`);
 
       const { stdout, stderr, exitCode } = await this._executeShellScript(shellScript, {
         cwd: cliCallTemplate.working_dir || undefined,
         env,
-      }, 30000);
+        // 60s, not 30s: Windows PowerShell startup on CI runners can
+        // be slow (especially the first time in a session, before
+        // module path caches warm up). Discovery runs once per
+        // manual, so a generous ceiling here is cheap.
+      }, 60000);
 
       // Get output based on exit code
       const output = exitCode === 0 ? stdout : stderr;
@@ -337,13 +696,19 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
     this._log_info(`Executing CLI tool '${toolName}' with ${cliCallTemplate.commands.length} command(s) in single subprocess`);
     
     try {
-      const env = this._prepare_environment(cliCallTemplate);
-      
-      // Build combined shell script with output capture
-      const shellScript = this._build_combined_shell_script(cliCallTemplate.commands, toolArgs);
-      
+      const baseEnv = this._prepare_environment(cliCallTemplate);
+
+      // Build combined shell script with output capture. The script's
+      // placeholders are emitted as `$VAR` / `${VAR}` / `$env:VAR`
+      // references; the actual tool_arg values come back as `argEnv`.
+      const { script: shellScript, env: argEnv } = this._build_combined_shell_script(
+        cliCallTemplate.commands,
+        toolArgs,
+      );
+      const env = { ...baseEnv, ...argEnv };
+
       this._log_info('Executing combined shell script');
-      
+
       // Execute the combined script in a single subprocess
       const { stdout, stderr, exitCode } = await this._executeShellScript(shellScript, {
         cwd: cliCallTemplate.working_dir || undefined,

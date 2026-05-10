@@ -25,6 +25,7 @@ import { ApiKeyAuth } from '@utcp/sdk';
 import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { HttpCallTemplate } from './http_call_template';
+import { isLoopbackUrl } from './_security';
 
 /**
  * Options for the OpenAPI converter.
@@ -121,10 +122,15 @@ export class OpenApiConverter {
     this.placeholder_counter = 0;
     const tools: Tool[] = [];
     let baseUrl = '/';
+    // Tracks whether the caller explicitly chose `baseUrl` -- only an
+    // explicit override is allowed to bypass the SSRF check below.
+    let baseUrlIsExplicitOverride = false;
 
-    // 1. Explicit baseUrl option (highest priority)
+    // 1. Explicit baseUrl option (highest priority).
+    //    Caller has accepted the trust decision, no further validation here.
     if (this.base_url) {
       baseUrl = this.base_url;
+      baseUrlIsExplicitOverride = true;
     }
     // 2. OpenAPI 3.0 servers field
     else if (this.spec.servers && Array.isArray(this.spec.servers) && this.spec.servers.length > 0 && this.spec.servers[0].url) {
@@ -146,6 +152,30 @@ export class OpenApiConverter {
       }
     } else {
       console.warn("[OpenApiConverter] No server info found in OpenAPI spec. Using fallback base URL: '/'. Tools may not work correctly without a valid base URL.");
+    }
+
+    // SSRF defense: a spec fetched from a non-loopback source cannot
+    // declare a base URL that points at the agent's own loopback
+    // interface. Applies uniformly to branches 2 (OpenAPI 3.0
+    // `servers`), 3 (OpenAPI 2.0 `host`), and 4 (`spec_url` fallback)
+    // -- the original fix only covered branch 2, leaving an
+    // OpenAPI-2.0-shaped bypass via `host: "127.0.0.1"`. Branch 1
+    // (explicit `base_url`) is always trusted: the caller has made the
+    // decision themselves. A user pointing the converter at their own
+    // localhost OpenAPI spec is also allowed to declare loopback URLs.
+    if (
+      !baseUrlIsExplicitOverride &&
+      this.spec_url &&
+      !isLoopbackUrl(this.spec_url) &&
+      isLoopbackUrl(baseUrl)
+    ) {
+      throw new Error(
+        `Security error: OpenAPI spec fetched from ${JSON.stringify(this.spec_url)} ` +
+          `declares a loopback base URL (${JSON.stringify(baseUrl)}). ` +
+          "A remote spec is not allowed to redirect tool calls at the agent's own loopback interface — " +
+          'this is the SSRF pattern from GHSA-39j6-4867-gg4w / CVE-2026-44661. ' +
+          'If you trust this spec, set the call template\'s `base_url` override explicitly to bypass this check.',
+      );
     }
 
     const paths = this.spec.paths || {};
