@@ -12,6 +12,7 @@ import { OAuth2Auth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk'; 
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
+import { ensureSecureUrl } from './_security';
 
 /**
  * HTTP communication protocol implementation for UTCP client.
@@ -52,12 +53,8 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     try {
       const url = httpCallTemplate.url;
 
-      if (!url.startsWith('https://') && !url.startsWith('http://localhost') && !url.startsWith('http://127.0.0.1')) {
-        throw new Error(
-          `Security error: URL must use HTTPS or start with 'http://localhost' or 'http://127.0.0.1'. Got: ${url}. ` +
-          "Non-secure URLs are vulnerable to man-in-the-middle attacks."
-        );
-      }
+      // Security check: only HTTPS or loopback HTTP allowed for manual discovery.
+      ensureSecureUrl(url, 'manual discovery');
 
       this._logInfo(`Discovering tools from '${httpCallTemplate.name}' (HTTP) at ${url}`);
 
@@ -164,6 +161,12 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     }
 
     const url = this._buildUrlWithPathParams(httpCallTemplate.url, remainingArgs);
+
+    // Security check: re-validate the resolved URL before each invocation.
+    // Defends against SSRF via attacker-controlled OpenAPI specs that point
+    // `servers[0].url` at internal services. See GHSA-39j6-4867-gg4w /
+    // CVE-2026-44661.
+    ensureSecureUrl(url, 'tool invocation');
 
     Object.assign(queryParams, remainingArgs);
 

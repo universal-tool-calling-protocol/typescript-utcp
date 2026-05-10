@@ -25,6 +25,7 @@ import { ApiKeyAuth } from '@utcp/sdk';
 import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { HttpCallTemplate } from './http_call_template';
+import { isLoopbackUrl } from './_security';
 
 /**
  * Options for the OpenAPI converter.
@@ -122,13 +123,28 @@ export class OpenApiConverter {
     const tools: Tool[] = [];
     let baseUrl = '/';
 
-    // 1. Explicit baseUrl option (highest priority)
+    // 1. Explicit baseUrl option (highest priority).
+    //    Caller has accepted the trust decision, no further validation here.
     if (this.base_url) {
       baseUrl = this.base_url;
     }
     // 2. OpenAPI 3.0 servers field
     else if (this.spec.servers && Array.isArray(this.spec.servers) && this.spec.servers.length > 0 && this.spec.servers[0].url) {
       baseUrl = this.spec.servers[0].url;
+
+      // Rule: a spec fetched from a non-loopback source cannot declare a
+      // loopback server URL. A user pointing the converter at their own
+      // localhost OpenAPI spec is allowed to declare loopback servers,
+      // and an explicit `base_url` override always wins (handled above).
+      if (this.spec_url && !isLoopbackUrl(this.spec_url) && isLoopbackUrl(baseUrl)) {
+        throw new Error(
+          `Security error: OpenAPI spec fetched from ${JSON.stringify(this.spec_url)} ` +
+            `declares a loopback server URL (${JSON.stringify(baseUrl)}). ` +
+            "A remote spec is not allowed to redirect tool calls at the agent's own loopback interface — " +
+            'this is the SSRF pattern from GHSA-39j6-4867-gg4w / CVE-2026-44661. ' +
+            'If you trust this spec, set the call template\'s `base_url` override explicitly to bypass this check.',
+        );
+      }
     }
     // 3. OpenAPI 2.0 host and basePath fields
     else if (this.spec.host) {
