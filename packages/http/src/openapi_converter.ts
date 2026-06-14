@@ -25,7 +25,7 @@ import { ApiKeyAuth } from '@utcp/sdk';
 import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { HttpCallTemplate } from './http_call_template';
-import { isLoopbackUrl } from './_security';
+import { ensureSecureUrl, isLoopbackUrl } from './_security';
 
 /**
  * Options for the OpenAPI converter.
@@ -625,6 +625,13 @@ export class OpenApiConverter {
           if (['authorizationCode', 'accessCode', 'clientCredentials', 'application'].includes(flowType)) {
             const tokenUrl = (flowConfig as Record<string, any>).tokenUrl;
             if (tokenUrl) {
+              // Reject obviously-internal or plain-HTTP token URLs at
+              // conversion time so an attacker-controlled OpenAPI
+              // spec cannot smuggle a credential-exfiltration sink
+              // into the generated call template. The runtime check
+              // in ``_handleOAuth2`` also enforces this -- see
+              // GHSA-8cp3-qxj6-px34.
+              ensureSecureUrl(tokenUrl, 'OAuth2 tokenUrl in OpenAPI spec');
               // Use the current counter value for both placeholders
               const clientIdPlaceholder = this._getPlaceholder('CLIENT_ID');
               const clientSecretPlaceholder = this._getPlaceholder('CLIENT_SECRET');
@@ -642,10 +649,11 @@ export class OpenApiConverter {
           }
         }
       }
-      
+
       // OpenAPI 2.0 format fallback
       const tokenUrl = scheme.tokenUrl;
       if (tokenUrl) {
+        ensureSecureUrl(tokenUrl, 'OAuth2 tokenUrl in OpenAPI spec');
         const clientIdPlaceholder = this._getPlaceholder('CLIENT_ID');
         const clientSecretPlaceholder = this._getPlaceholder('CLIENT_SECRET');
         this._incrementPlaceholderCounter();

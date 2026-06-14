@@ -99,10 +99,15 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
         urlObj.searchParams.append(key, String(value));
       });
 
-      // Build fetch options
+      // Build fetch options. ``redirect: 'error'`` refuses to follow
+      // 3xx responses -- streaming handshakes shouldn't redirect, and
+      // doing so silently would let an attacker-controlled endpoint
+      // steer the stream into an internal service
+      // (GHSA-9qhg-99ww-9mqc).
       const fetchOptions: RequestInit = {
         method: provider.http_method || 'GET',
         headers: requestHeaders,
+        redirect: 'error',
       };
 
       // Add basic auth if present
