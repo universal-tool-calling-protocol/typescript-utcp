@@ -199,8 +199,9 @@ describe('safeRequestWithRedirects', () => {
         },
         'OAuth2 token fetch',
       );
-      expect(landedBody).not.toContain('victim-SECRET');
-      expect(landedBody).not.toContain('client_secret');
+      // Strict: the body must be empty on the second hop. Anything
+      // else means we forwarded part of the original POST body.
+      expect(landedBody).toBe('');
     } finally {
       await attacker.close();
       await target.close();

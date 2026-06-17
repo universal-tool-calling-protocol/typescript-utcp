@@ -631,7 +631,7 @@ export class OpenApiConverter {
               // into the generated call template. The runtime check
               // in ``_handleOAuth2`` also enforces this -- see
               // GHSA-8cp3-qxj6-px34.
-              this._validateTokenUrlEagerly(tokenUrl);
+              const resolvedTokenUrl = this._validateTokenUrlEagerly(tokenUrl);
               // Use the current counter value for both placeholders
               const clientIdPlaceholder = this._getPlaceholder('CLIENT_ID');
               const clientSecretPlaceholder = this._getPlaceholder('CLIENT_SECRET');
@@ -640,7 +640,7 @@ export class OpenApiConverter {
               const scopes = (flowConfig as Record<string, any>).scopes || {};
               return {
                 auth_type: 'oauth2',
-                token_url: tokenUrl,
+                token_url: resolvedTokenUrl,
                 client_id: clientIdPlaceholder,
                 client_secret: clientSecretPlaceholder,
                 scope: Object.keys(scopes).length > 0 ? Object.keys(scopes).join(' ') : undefined,
@@ -653,14 +653,14 @@ export class OpenApiConverter {
       // OpenAPI 2.0 format fallback
       const tokenUrl = scheme.tokenUrl;
       if (tokenUrl) {
-        this._validateTokenUrlEagerly(tokenUrl);
+        const resolvedTokenUrl = this._validateTokenUrlEagerly(tokenUrl);
         const clientIdPlaceholder = this._getPlaceholder('CLIENT_ID');
         const clientSecretPlaceholder = this._getPlaceholder('CLIENT_SECRET');
         this._incrementPlaceholderCounter();
         const scopes = scheme.scopes || {};
         return {
           auth_type: 'oauth2',
-          token_url: tokenUrl,
+          token_url: resolvedTokenUrl,
           client_id: clientIdPlaceholder,
           client_secret: clientSecretPlaceholder,
           scope: Object.keys(scopes).length > 0 ? Object.keys(scopes).join(' ') : undefined,
@@ -672,19 +672,26 @@ export class OpenApiConverter {
   }
 
   /**
-   * Eagerly validate an OpenAPI OAuth2 `tokenUrl` so an attacker-
-   * controlled spec cannot smuggle a credential-exfiltration sink into
-   * the generated call template. Backs GHSA-8cp3-qxj6-px34.
+   * Validate (and, when relative, resolve) an OpenAPI OAuth2
+   * `tokenUrl` at conversion time. Returns the URL that should be
+   * embedded in the generated `OAuth2Auth` so the runtime check in
+   * `_handleOAuth2` sees an absolute URL instead of an unresolved
+   * relative reference (which would always fail at runtime). Backs
+   * GHSA-8cp3-qxj6-px34.
    *
    * OpenAPI 3.0 / 3.1 explicitly allow `tokenUrl` to be a relative
-   * reference resolved against the spec's own location. Reject only
-   * **absolute** URLs that fail the validator here; relative URLs are
-   * resolved against `spec_url` if available (so the validator still
-   * applies to the effective URL), and otherwise are left intact for
-   * `_handleOAuth2` to validate at runtime. This avoids rejecting
-   * legitimate specs that use `"tokenUrl": "/oauth/token"`.
+   * reference resolved against the spec's own location. Behaviour:
+   *
+   *   - Absolute URL: run `ensureSecureUrl` and return as-is.
+   *   - Relative URL with `spec_url` available: resolve against
+   *     `spec_url`, validate the resolved URL, and return it so the
+   *     runtime check sees the absolute form. This also closes the
+   *     `"tokenUrl": "//host/token"` scheme-relative bypass.
+   *   - Relative URL without `spec_url`: nothing to resolve against.
+   *     Return the original string unchanged; the runtime check will
+   *     reject it later.
    */
-  private _validateTokenUrlEagerly(tokenUrl: string): void {
+  private _validateTokenUrlEagerly(tokenUrl: string): string {
     let absoluteParse: URL | null = null;
     try {
       absoluteParse = new URL(tokenUrl);
@@ -694,7 +701,7 @@ export class OpenApiConverter {
 
     if (absoluteParse && absoluteParse.protocol && absoluteParse.hostname) {
       ensureSecureUrl(tokenUrl, 'OAuth2 tokenUrl in OpenAPI spec');
-      return;
+      return tokenUrl;
     }
 
     if (this.spec_url) {
@@ -702,7 +709,7 @@ export class OpenApiConverter {
       try {
         resolved = new URL(tokenUrl, this.spec_url).toString();
       } catch {
-        return;
+        return tokenUrl;
       }
       let resolvedParse: URL | null = null;
       try {
@@ -715,7 +722,10 @@ export class OpenApiConverter {
           resolved,
           'OAuth2 tokenUrl in OpenAPI spec (resolved from relative URL)',
         );
+        return resolved;
       }
     }
+
+    return tokenUrl;
   }
 }

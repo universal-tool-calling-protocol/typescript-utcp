@@ -199,13 +199,12 @@ const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]
  * case-insensitive against this lowercase set.
  */
 const AUTH_SENSITIVE_HEADERS: ReadonlySet<string> = new Set([
+  // Canonical IETF headers.
   'authorization',
   'proxy-authorization',
   'cookie',
   'www-authenticate',
-  // Common API-key / service-token header names. UTCP `ApiKeyAuth`
-  // lets callers put a secret under an arbitrary header name, so this
-  // list is intentionally broad.
+  // Hyphenated API-key / service-token names.
   'x-api-key',
   'api-key',
   'x-auth-token',
@@ -214,15 +213,41 @@ const AUTH_SENSITIVE_HEADERS: ReadonlySet<string> = new Set([
   'x-xsrf-token',
   'x-amz-security-token',
   'x-goog-api-key',
+  // Underscore-separated variants (some HTTP stacks normalise
+  // `X-API-Key` to `X_API_KEY`).
+  'x_api_key',
+  'api_key',
+  'x_auth_token',
+  'x_access_token',
+  'x_csrf_token',
+  'x_xsrf_token',
+  // Condensed / no-separator variants seen in custom APIs
+  // (`XApiKey` lowercased becomes `xapikey`).
+  'apikey',
+  'xapikey',
+  'authtoken',
+  'xauthtoken',
+  'accesstoken',
+  'xaccesstoken',
+  'bearertoken',
+  'sessionid',
+  'csrftoken',
+  'xsrftoken',
 ]);
 
 /**
  * Catches ad-hoc auth header names that aren't in the explicit set
- * above (`X-MyApp-Token`, `Custom-Bearer`, etc.). Conservative but
- * biased toward strip-on-cross-origin since false positives are only
- * a usability cost.
+ * above (`X-MyApp-Token`, `Custom-Bearer`, `X_MyApp_Token`, etc.).
+ * Conservative but biased toward strip-on-cross-origin since false
+ * positives are only a usability cost.
+ *
+ * Two alternations:
+ *   1. Word-boundary match (hyphen / underscore / start / end) so
+ *      `X-Foo-Token` and `X_FOO_TOKEN` both trip.
+ *   2. No-boundary match on compound condensed names (`XApiKey`
+ *      lowercased to `xapikey`).
  */
-const AUTH_HEADER_REGEX = /(^|-)(auth|authn|authz|token|key|secret|bearer|session|sid|api[_-]?key|jwt)(-|$)/i;
+const AUTH_HEADER_REGEX = /(?:(?:^|[-_])(?:auth|authn|authz|token|key|secret|bearer|session|sid|api[-_]?key|jwt|csrf|xsrf)(?:[-_]|$))|(?:apikey|authtoken|accesstoken|bearertoken|sessionid|csrftoken|xsrftoken|xapikey|xauthtoken|xaccesstoken|xapitoken)/i;
 
 function headerIsAuthSensitive(name: string): boolean {
   if (typeof name !== 'string') return false;
