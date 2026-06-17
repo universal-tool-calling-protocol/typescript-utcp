@@ -93,6 +93,184 @@ describe('safeRequestWithRedirects', () => {
     }
   });
 
+  test('strips Authorization header on cross-origin redirect', async () => {
+    let landedAuth: string | undefined;
+    let landedCookie: string | undefined;
+    const target = await startServer((req, res) => {
+      landedAuth = req.headers['authorization'] as string | undefined;
+      landedCookie = req.headers['cookie'] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const attacker = await startServer((req, res) => {
+      res.writeHead(302, { Location: `http://127.0.0.1:${target.port}/landed` });
+      res.end();
+    });
+    try {
+      // Different ports = different origins on the same host -- the
+      // canonical cross-origin redirect.
+      const ax = axios.create({ timeout: 5000 });
+      await safeRequestWithRedirects(
+        ax,
+        {
+          url: `http://127.0.0.1:${attacker.port}/tool`,
+          method: 'GET',
+          headers: {
+            Authorization: 'Bearer victim-secret',
+            Cookie: 'session=victim-session',
+          },
+        },
+        'tool invocation',
+      );
+
+      expect(landedAuth).toBeUndefined();
+      expect(landedCookie).toBeUndefined();
+    } finally {
+      await attacker.close();
+      await target.close();
+    }
+  });
+
+  test('strips custom API-key header (X-Api-Key) on cross-origin redirect', async () => {
+    let landedKey: string | undefined;
+    let landedToken: string | undefined;
+    let landedTrace: string | undefined;
+    const target = await startServer((req, res) => {
+      landedKey = req.headers['x-api-key'] as string | undefined;
+      landedToken = req.headers['x-myapp-token'] as string | undefined;
+      landedTrace = req.headers['x-trace-id'] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const attacker = await startServer((req, res) => {
+      res.writeHead(302, { Location: `http://127.0.0.1:${target.port}/landed` });
+      res.end();
+    });
+    try {
+      const ax = axios.create({ timeout: 5000 });
+      await safeRequestWithRedirects(
+        ax,
+        {
+          url: `http://127.0.0.1:${attacker.port}/tool`,
+          method: 'GET',
+          headers: {
+            'X-Api-Key': 'secret-key',
+            'X-MyApp-Token': 'secret-token',
+            'X-Trace-Id': 'trace-keep-this',
+          },
+        },
+        'tool invocation',
+      );
+      expect(landedKey).toBeUndefined();
+      expect(landedToken).toBeUndefined();
+      expect(landedTrace).toBe('trace-keep-this');
+    } finally {
+      await attacker.close();
+      await target.close();
+    }
+  });
+
+  test('drops request body on cross-origin 307 redirect', async () => {
+    let landedBody = '';
+    const target = await startServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        landedBody = Buffer.concat(chunks).toString('utf-8');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    });
+    const attacker = await startServer((req, res) => {
+      // 307 preserves method+body. Body must NOT be forwarded
+      // cross-origin -- the OAuth POST case is the exploit.
+      res.writeHead(307, { Location: `http://127.0.0.1:${target.port}/landed` });
+      res.end();
+    });
+    try {
+      const ax = axios.create({ timeout: 5000 });
+      await safeRequestWithRedirects(
+        ax,
+        {
+          url: `http://127.0.0.1:${attacker.port}/token`,
+          method: 'POST',
+          data: 'grant_type=client_credentials&client_id=victim&client_secret=victim-SECRET',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        },
+        'OAuth2 token fetch',
+      );
+      expect(landedBody).not.toContain('victim-SECRET');
+      expect(landedBody).not.toContain('client_secret');
+    } finally {
+      await attacker.close();
+      await target.close();
+    }
+  });
+
+  test('treats explicit-default-port URLs as same origin', async () => {
+    let landedAuth: string | undefined;
+    const handler = (req: IncomingMessage, res: ServerResponse) => {
+      if (req.url === '/start') {
+        // Emit explicit port in Location even though the request came
+        // in on the same port -- the helper must treat both as the
+        // same origin and not strip Authorization.
+        const port = req.headers.host?.split(':')[1] ?? '80';
+        res.writeHead(302, { Location: `http://127.0.0.1:${port}/landed` });
+        res.end();
+        return;
+      }
+      landedAuth = req.headers['authorization'] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    };
+    const server = await startServer(handler);
+    try {
+      const ax = axios.create({ timeout: 5000 });
+      await safeRequestWithRedirects(
+        ax,
+        {
+          url: `http://127.0.0.1:${server.port}/start`,
+          method: 'GET',
+          headers: { Authorization: 'Bearer keep-me' },
+        },
+        'tool invocation',
+      );
+      expect(landedAuth).toBe('Bearer keep-me');
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('keeps Authorization header on same-origin redirect', async () => {
+    let landedAuth: string | undefined;
+    const handler = (req: IncomingMessage, res: ServerResponse) => {
+      if (req.url === '/start') {
+        res.writeHead(302, { Location: '/landed' });
+        res.end();
+        return;
+      }
+      landedAuth = req.headers['authorization'] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    };
+    const server = await startServer(handler);
+    try {
+      const ax = axios.create({ timeout: 5000 });
+      await safeRequestWithRedirects(
+        ax,
+        {
+          url: `http://127.0.0.1:${server.port}/start`,
+          method: 'GET',
+          headers: { Authorization: 'Bearer same-origin-ok' },
+        },
+        'tool invocation',
+      );
+      expect(landedAuth).toBe('Bearer same-origin-ok');
+    } finally {
+      await server.close();
+    }
+  });
+
   test('caps the redirect chain at maxHops', async () => {
     const loop = await startServer((req, res) => {
       res.writeHead(302, { Location: '/loop' });
@@ -229,6 +407,34 @@ describe('OpenAPI converter OAuth2 tokenUrl validation', () => {
     const converter = new OpenApiConverter(goodSpec, {
       specUrl: 'https://api.example.com/openapi.json',
     });
+    const manual = converter.convert();
+    expect(manual.tools.length).toBe(1);
+  });
+
+  test('accepts a relative tokenUrl resolved against a loopback spec', () => {
+    // OpenAPI 3.0 / 3.1 explicitly allow tokenUrl to be a relative
+    // reference. The eager validator must NOT reject this case.
+    const spec = makeMaliciousSpec('/oauth/token');
+    const converter = new OpenApiConverter(spec, {
+      specUrl: 'http://localhost:8000/openapi.json',
+    });
+    const manual = converter.convert();
+    expect(manual.tools.length).toBe(1);
+  });
+
+  test('accepts a relative tokenUrl resolved against an https spec', () => {
+    const spec = makeMaliciousSpec('/oauth/token');
+    const converter = new OpenApiConverter(spec, {
+      specUrl: 'https://api.example.com/openapi.json',
+    });
+    const manual = converter.convert();
+    expect(manual.tools.length).toBe(1);
+  });
+
+  test('accepts a relative tokenUrl when no specUrl is provided', () => {
+    // Cannot resolve -> defer to runtime check.
+    const spec = makeMaliciousSpec('/oauth/token');
+    const converter = new OpenApiConverter(spec);
     const manual = converter.convert();
     expect(manual.tools.length).toBe(1);
   });

@@ -71,12 +71,83 @@ export function isSecureUrl(url: string): boolean {
 }
 
 /**
+ * Return true if `host` is an IP literal that the local kernel will
+ * route to the host running the agent.
+ *
+ * Mirrors `utcp_http._security._ip_is_loopback_like` from the Python
+ * reference implementation. Goes beyond the obvious `127.0.0.1` /
+ * `::1` literals to cover:
+ *   - the entire `127.0.0.0/8` range (the WHATWG URL parser normalizes
+ *     shorthand forms like `http://127.1/` and `http://2130706433/`
+ *     into canonical dotted-quad, but `127.0.0.2` is a distinct host
+ *     that still routes to local loopback);
+ *   - `0.0.0.0` and `::` -- on Linux a TCP connect to these lands on
+ *     local loopback;
+ *   - IPv4-mapped IPv6 loopback (`::ffff:127.0.0.1` etc.) -- the
+ *     dual-stack socket layer routes these to the v4 loopback even
+ *     though strict IPv6 semantics do not call them loopback.
+ *
+ * Closes the residual SSRF window left by the original
+ * `LOOPBACK_HOSTNAMES` set in `isLoopbackUrl`, which is used by the
+ * OpenAPI converter to block remote specs declaring loopback
+ * `servers[0].url` values.
+ */
+function isIpLoopbackLike(host: string): boolean {
+  if (host === '0.0.0.0' || host === '::') return true;
+  // IPv4 dotted-quad: any 127.x.x.x is loopback (entire 127.0.0.0/8).
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const octets = v4.slice(1).map((s) => parseInt(s, 10));
+    if (octets.every((o) => o >= 0 && o <= 255)) {
+      if (octets[0] === 127) return true;
+    }
+  }
+  // IPv6 literals (URL.hostname already strips brackets in our caller).
+  // The WHATWG URL parser canonicalises:
+  //   ::1 -> ::1
+  //   0:0:0:0:0:0:0:1 -> ::1
+  //   ::ffff:127.0.0.1 -> ::ffff:7f00:1
+  //   ::ffff:0:1 -> ::ffff:0:1
+  // Match the canonical loopback IPv6 (already in the set) and any
+  // IPv4-mapped form that embeds a 127.x.x.x address.
+  if (host === '::1' || host === '::') return true;
+  // IPv4-mapped IPv6: ::ffff:<v4>. The canonical compressed form is
+  // ::ffff:HHHH:HHHH where the trailing 32 bits encode the v4.
+  // Detect any `::ffff:` prefix and inspect the trailing 4 hex groups
+  // (or dotted-quad fallback).
+  if (host.startsWith('::ffff:')) {
+    const tail = host.slice('::ffff:'.length);
+    // Dotted-quad tail: ::ffff:127.0.0.1
+    const tailV4 = tail.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (tailV4) {
+      const oct = tailV4.slice(1).map((s) => parseInt(s, 10));
+      if (oct.every((o) => o >= 0 && o <= 255) && oct[0] === 127) return true;
+    }
+    // Hex-pair tail: ::ffff:7f00:1 (== 127.0.0.1). Parse two 16-bit
+    // groups and reassemble as a /8 check.
+    const tailHex = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (tailHex) {
+      const hi = parseInt(tailHex[1], 16);
+      const lo = parseInt(tailHex[2], 16);
+      // hi covers octets 1+2 of the v4 address; check whether octet 1
+      // (the upper 8 bits of hi) is 127.
+      const octet1 = (hi >>> 8) & 0xff;
+      if (octet1 === 127) return true;
+      // Guard against unused-var lint.
+      void lo;
+    }
+  }
+  return false;
+}
+
+/**
  * Returns true if `url`'s host is a literal loopback address.
  *
  * Used by the OpenAPI converter to detect the SSRF case where a remote spec
  * declares `servers: [{ url: "http://127.0.0.1:..." }]` to redirect tool
  * invocation at the host running the agent. Hostname-based — not a string
- * prefix — so `http://localhost.evil.com` returns false.
+ * prefix — so `http://localhost.evil.com` returns false. Also covers
+ * `127.0.0.0/8`, `0.0.0.0`, `::`, and IPv4-mapped IPv6 loopback forms.
  */
 export function isLoopbackUrl(url: string): boolean {
   const parsed = tryParseUrl(url);
@@ -85,7 +156,8 @@ export function isLoopbackUrl(url: string): boolean {
   const host = getHostname(parsed);
   if (!host) return false;
 
-  return LOOPBACK_HOSTNAMES.has(host);
+  if (LOOPBACK_HOSTNAMES.has(host)) return true;
+  return isIpLoopbackLike(host);
 }
 
 /**
@@ -121,6 +193,105 @@ interface AxiosLike {
 const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
 /**
+ * Headers that carry authentication / session material and must be
+ * stripped when a redirect crosses to a different origin. Matches the
+ * canonical behaviour of fetch / requests / curl. Comparison is
+ * case-insensitive against this lowercase set.
+ */
+const AUTH_SENSITIVE_HEADERS: ReadonlySet<string> = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'www-authenticate',
+  // Common API-key / service-token header names. UTCP `ApiKeyAuth`
+  // lets callers put a secret under an arbitrary header name, so this
+  // list is intentionally broad.
+  'x-api-key',
+  'api-key',
+  'x-auth-token',
+  'x-access-token',
+  'x-csrf-token',
+  'x-xsrf-token',
+  'x-amz-security-token',
+  'x-goog-api-key',
+]);
+
+/**
+ * Catches ad-hoc auth header names that aren't in the explicit set
+ * above (`X-MyApp-Token`, `Custom-Bearer`, etc.). Conservative but
+ * biased toward strip-on-cross-origin since false positives are only
+ * a usability cost.
+ */
+const AUTH_HEADER_REGEX = /(^|-)(auth|authn|authz|token|key|secret|bearer|session|sid|api[_-]?key|jwt)(-|$)/i;
+
+function headerIsAuthSensitive(name: string): boolean {
+  if (typeof name !== 'string') return false;
+  const lower = name.toLowerCase();
+  if (AUTH_SENSITIVE_HEADERS.has(lower)) return true;
+  return AUTH_HEADER_REGEX.test(lower);
+}
+
+const DEFAULT_PORTS: Record<string, string> = {
+  'http:': '80',
+  'https:': '443',
+  'ws:': '80',
+  'wss:': '443',
+};
+
+function effectivePort(u: URL): string {
+  return u.port || DEFAULT_PORTS[u.protocol.toLowerCase()] || '';
+}
+
+function sameOrigin(a: string, b: string): boolean {
+  let ua: URL, ub: URL;
+  try {
+    ua = new URL(a);
+    ub = new URL(b);
+  } catch {
+    return false;
+  }
+  if (ua.protocol.toLowerCase() !== ub.protocol.toLowerCase()) return false;
+  if (ua.hostname.toLowerCase() !== ub.hostname.toLowerCase()) return false;
+  // Normalise default ports (`""` vs `"443"`) so a same-origin redirect
+  // to an explicit-port URL doesn't trip the cross-origin scrub and
+  // silently strip the caller's auth.
+  return effectivePort(ua) === effectivePort(ub);
+}
+
+/**
+ * Mutate `config` in place to drop credential-bearing fields when the
+ * next hop crosses to a different origin. Mirrors browser / requests
+ * behaviour:
+ *   - `Authorization` and other canonical auth headers;
+ *   - common API-key / service-token header names + an auth-regex
+ *     catch-all for ad-hoc names;
+ *   - axios basic-`auth`;
+ *   - `params` (commonly carries API keys via the query string);
+ *   - `withCredentials`;
+ *   - the request body (`data`) -- a 307/308 redirect preserves the
+ *     body, and the body of e.g. an OAuth2 token POST contains the
+ *     exact credentials we're trying to protect. Refuse to resend it
+ *     cross-origin.
+ */
+function scrubCrossOriginCredentials(config: Record<string, any>): void {
+  const headers = config.headers;
+  if (headers && typeof headers === 'object') {
+    const scrubbed: Record<string, any> = {};
+    for (const [k, v] of Object.entries(headers)) {
+      if (headerIsAuthSensitive(k)) continue;
+      scrubbed[k] = v;
+    }
+    config.headers = scrubbed;
+  }
+  delete config.auth;
+  delete config.params;
+  delete config.withCredentials;
+  // Request body. 307/308 would otherwise resend it to the new origin
+  // -- the OAuth token-POST case is the headline exploit.
+  delete config.data;
+}
+
+/**
  * Issue an HTTP request that re-validates every redirect hop.
  *
  * axios's default `maxRedirects: 5` would otherwise let an
@@ -151,17 +322,23 @@ export async function safeRequestWithRedirects<T = any>(
 ): Promise<{ status: number; headers: Record<string, any>; data: T }> {
   ensureSecureUrl(config.url, context);
 
-  let currentUrl = config.url;
-  let currentMethod = config.method;
-  let currentData = config.data;
+  // Build a mutable working copy so we can strip credentials between
+  // hops without mutating the caller's object. ``headers`` is shallow-
+  // copied because we may need to rewrite it during cross-origin
+  // scrubbing; other fields are kept by reference (good enough for the
+  // primitive / plain-object values we use).
+  const working: Record<string, any> = { ...config };
+  if (working.headers && typeof working.headers === 'object') {
+    working.headers = { ...working.headers };
+  }
+
+  let currentUrl = working.url;
   let hops = 0;
 
   while (true) {
     const response = await axiosInstance.request<T>({
-      ...config,
+      ...working,
       url: currentUrl,
-      method: currentMethod,
-      data: currentData,
       // Take redirect control away from axios so it cannot
       // silently land on an unvalidated host.
       maxRedirects: 0,
@@ -190,9 +367,18 @@ export async function safeRequestWithRedirects<T = any>(
     const nextUrl = new URL(location, currentUrl).toString();
     ensureSecureUrl(nextUrl, `${context} (redirect target)`);
 
+    // Strip credential-bearing fields when the redirect crosses to a
+    // different origin. Mirrors fetch / requests / curl: without this
+    // an attacker-controlled endpoint could 302 us to their own
+    // server and our ``Authorization`` header / basic ``auth`` /
+    // ``params`` API key would be forwarded along.
+    if (!sameOrigin(currentUrl, nextUrl)) {
+      scrubCrossOriginCredentials(working);
+    }
+
     if (response.status === 303) {
-      currentMethod = 'GET';
-      currentData = undefined;
+      working.method = 'GET';
+      working.data = undefined;
     }
     currentUrl = nextUrl;
     hops += 1;

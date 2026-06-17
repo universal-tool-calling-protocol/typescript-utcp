@@ -617,7 +617,7 @@ export class OpenApiConverter {
     if (schemeType === 'oauth2') {
       // Handle both OpenAPI 2.0 and 3.0 OAuth2 formats
       const flows = scheme.flows || {};
-      
+
       // OpenAPI 3.0 format
       if (Object.keys(flows).length > 0) {
         for (const [flowType, flowConfig] of Object.entries(flows)) {
@@ -631,7 +631,7 @@ export class OpenApiConverter {
               // into the generated call template. The runtime check
               // in ``_handleOAuth2`` also enforces this -- see
               // GHSA-8cp3-qxj6-px34.
-              ensureSecureUrl(tokenUrl, 'OAuth2 tokenUrl in OpenAPI spec');
+              this._validateTokenUrlEagerly(tokenUrl);
               // Use the current counter value for both placeholders
               const clientIdPlaceholder = this._getPlaceholder('CLIENT_ID');
               const clientSecretPlaceholder = this._getPlaceholder('CLIENT_SECRET');
@@ -653,7 +653,7 @@ export class OpenApiConverter {
       // OpenAPI 2.0 format fallback
       const tokenUrl = scheme.tokenUrl;
       if (tokenUrl) {
-        ensureSecureUrl(tokenUrl, 'OAuth2 tokenUrl in OpenAPI spec');
+        this._validateTokenUrlEagerly(tokenUrl);
         const clientIdPlaceholder = this._getPlaceholder('CLIENT_ID');
         const clientSecretPlaceholder = this._getPlaceholder('CLIENT_SECRET');
         this._incrementPlaceholderCounter();
@@ -669,5 +669,53 @@ export class OpenApiConverter {
     }
 
     return undefined;
+  }
+
+  /**
+   * Eagerly validate an OpenAPI OAuth2 `tokenUrl` so an attacker-
+   * controlled spec cannot smuggle a credential-exfiltration sink into
+   * the generated call template. Backs GHSA-8cp3-qxj6-px34.
+   *
+   * OpenAPI 3.0 / 3.1 explicitly allow `tokenUrl` to be a relative
+   * reference resolved against the spec's own location. Reject only
+   * **absolute** URLs that fail the validator here; relative URLs are
+   * resolved against `spec_url` if available (so the validator still
+   * applies to the effective URL), and otherwise are left intact for
+   * `_handleOAuth2` to validate at runtime. This avoids rejecting
+   * legitimate specs that use `"tokenUrl": "/oauth/token"`.
+   */
+  private _validateTokenUrlEagerly(tokenUrl: string): void {
+    let absoluteParse: URL | null = null;
+    try {
+      absoluteParse = new URL(tokenUrl);
+    } catch {
+      absoluteParse = null;
+    }
+
+    if (absoluteParse && absoluteParse.protocol && absoluteParse.hostname) {
+      ensureSecureUrl(tokenUrl, 'OAuth2 tokenUrl in OpenAPI spec');
+      return;
+    }
+
+    if (this.spec_url) {
+      let resolved: string;
+      try {
+        resolved = new URL(tokenUrl, this.spec_url).toString();
+      } catch {
+        return;
+      }
+      let resolvedParse: URL | null = null;
+      try {
+        resolvedParse = new URL(resolved);
+      } catch {
+        resolvedParse = null;
+      }
+      if (resolvedParse && resolvedParse.protocol && resolvedParse.hostname) {
+        ensureSecureUrl(
+          resolved,
+          'OAuth2 tokenUrl in OpenAPI spec (resolved from relative URL)',
+        );
+      }
+    }
   }
 }
