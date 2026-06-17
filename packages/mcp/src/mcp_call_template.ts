@@ -1,7 +1,7 @@
 // packages/mcp/src/mcp_call_template.ts
 import { z } from 'zod';
 import { CallTemplate } from '@utcp/sdk';
-import { OAuth2Auth } from '@utcp/sdk';
+import { Auth } from '@utcp/sdk';
 import { AuthSchema } from '@utcp/sdk';
 import { Serializer } from '@utcp/sdk';
 
@@ -123,7 +123,7 @@ export interface McpCallTemplate extends CallTemplate {
   name?: string;
   call_template_type: 'mcp';
   config: McpConfig;
-  auth?: OAuth2Auth;
+  auth?: Auth;
   register_resources_as_tools?: boolean;
   allowed_communication_protocols?: string[];
 }

@@ -8,6 +8,7 @@ export * from './data/auth';
 export * from './data/auth_implementations/api_key_auth';
 export * from './data/auth_implementations/basic_auth';
 export * from './data/auth_implementations/oauth2_auth';
+export * from './data/auth_implementations/oauth2_user_auth';
 export * from './data/call_template';
 export * from './data/tool';
 export * from './data/utcp_manual';

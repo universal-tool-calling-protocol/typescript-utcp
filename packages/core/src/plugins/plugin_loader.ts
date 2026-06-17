@@ -3,6 +3,7 @@ import { AuthSerializer } from '../data/auth';
 import { ApiKeyAuthSerializer } from '../data/auth_implementations/api_key_auth';
 import { BasicAuthSerializer } from '../data/auth_implementations/basic_auth';
 import { OAuth2AuthSerializer } from '../data/auth_implementations/oauth2_auth';
+import { OAuth2UserAuthSerializer } from '../data/auth_implementations/oauth2_user_auth';
 import { setPluginInitializer } from '../interfaces/serializer';
 
 // Core Tool Repository
@@ -29,6 +30,7 @@ function _registerCorePlugins(): void {
   AuthSerializer.registerAuth('api_key', new ApiKeyAuthSerializer());
   AuthSerializer.registerAuth('basic', new BasicAuthSerializer());
   AuthSerializer.registerAuth('oauth2', new OAuth2AuthSerializer());
+  AuthSerializer.registerAuth('oauth2_user', new OAuth2UserAuthSerializer());
 
   // Register Tool Repository Serializers
   ConcurrentToolRepositoryConfigSerializer.registerRepository('in_memory', new InMemConcurrentToolRepositorySerializer());

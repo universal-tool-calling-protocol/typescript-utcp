@@ -272,6 +272,69 @@ describe('safeRequestWithRedirects', () => {
     }
   });
 
+  test('caller-declared custom auth header stripped on cross-origin redirect', async () => {
+    let landedKey: string | undefined;
+    const target = await startServer((req, res) => {
+      landedKey = req.headers['x-myapp'] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const attacker = await startServer((req, res) => {
+      res.writeHead(302, { Location: `http://127.0.0.1:${target.port}/landed` });
+      res.end();
+    });
+    try {
+      const ax = axios.create({ timeout: 5000 });
+      await safeRequestWithRedirects(
+        ax,
+        {
+          url: `http://127.0.0.1:${attacker.port}/tool`,
+          method: 'GET',
+          headers: { 'X-MyApp': 'secret-key' },
+        },
+        'tool invocation',
+        undefined,
+        ['X-MyApp'],
+      );
+      expect(landedKey).toBeUndefined();
+    } finally {
+      await attacker.close();
+      await target.close();
+    }
+  });
+
+  test('caller-declared custom auth header kept on same-origin redirect', async () => {
+    let landedKey: string | undefined;
+    const handler = (req: IncomingMessage, res: ServerResponse) => {
+      if (req.url === '/start') {
+        res.writeHead(302, { Location: '/landed' });
+        res.end();
+        return;
+      }
+      landedKey = req.headers['x-myapp'] as string | undefined;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    };
+    const server = await startServer(handler);
+    try {
+      const ax = axios.create({ timeout: 5000 });
+      await safeRequestWithRedirects(
+        ax,
+        {
+          url: `http://127.0.0.1:${server.port}/start`,
+          method: 'GET',
+          headers: { 'X-MyApp': 'secret-key' },
+        },
+        'tool invocation',
+        undefined,
+        ['X-MyApp'],
+      );
+      expect(landedKey).toBe('secret-key');
+    } finally {
+      await server.close();
+    }
+  });
+
   test('caps the redirect chain at maxHops', async () => {
     const loop = await startServer((req, res) => {
       res.writeHead(302, { Location: '/loop' });

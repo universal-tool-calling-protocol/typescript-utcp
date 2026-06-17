@@ -298,12 +298,22 @@ function sameOrigin(a: string, b: string): boolean {
  *     exact credentials we're trying to protect. Refuse to resend it
  *     cross-origin.
  */
-function scrubCrossOriginCredentials(config: Record<string, any>): void {
+function scrubCrossOriginCredentials(
+  config: Record<string, any>,
+  extraAuthHeaderNames: ReadonlySet<string> = new Set<string>(),
+): void {
   const headers = config.headers;
   if (headers && typeof headers === 'object') {
     const scrubbed: Record<string, any> = {};
     for (const [k, v] of Object.entries(headers)) {
       if (headerIsAuthSensitive(k)) continue;
+      // Strip caller-configured auth header names too -- e.g. an
+      // `ApiKeyAuth` with `var_name: "X-MyApp"` whose name doesn't
+      // match the auth-pattern regex. Without this, custom auth
+      // header names survive cross-origin redirects.
+      if (typeof k === 'string' && extraAuthHeaderNames.has(k.toLowerCase())) {
+        continue;
+      }
       scrubbed[k] = v;
     }
     config.headers = scrubbed;
@@ -344,6 +354,7 @@ export async function safeRequestWithRedirects<T = any>(
   config: { url: string; method: string; data?: any; [key: string]: any },
   context: string,
   maxHops: number = 5,
+  authHeaderNames: ReadonlyArray<string> = [],
 ): Promise<{ status: number; headers: Record<string, any>; data: T }> {
   ensureSecureUrl(config.url, context);
 
@@ -356,6 +367,17 @@ export async function safeRequestWithRedirects<T = any>(
   if (working.headers && typeof working.headers === 'object') {
     working.headers = { ...working.headers };
   }
+
+  // ``authHeaderNames`` is the explicit declaration of which header
+  // names the caller populated with a secret. Used to extend the
+  // cross-origin scrub beyond the canonical set so a custom-named
+  // API-key header (e.g. ``X-MyApp``) configured via ``ApiKeyAuth``
+  // / ``OAuth2UserAuth`` is also stripped on cross-origin redirect.
+  const extraAuthHeaderNames: ReadonlySet<string> = new Set(
+    authHeaderNames
+      .filter((n): n is string => typeof n === 'string')
+      .map((n) => n.toLowerCase()),
+  );
 
   let currentUrl = working.url;
   let hops = 0;
@@ -398,7 +420,7 @@ export async function safeRequestWithRedirects<T = any>(
     // server and our ``Authorization`` header / basic ``auth`` /
     // ``params`` API key would be forwarded along.
     if (!sameOrigin(currentUrl, nextUrl)) {
-      scrubCrossOriginCredentials(working);
+      scrubCrossOriginCredentials(working, extraAuthHeaderNames);
     }
 
     if (response.status === 303) {
