@@ -12,7 +12,7 @@ import { OAuth2Auth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk'; 
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
-import { ensureSecureUrl } from './_security';
+import { ensureSecureUrl, safeRequestWithRedirects } from './_security';
 
 /**
  * HTTP communication protocol implementation for UTCP client.
@@ -69,7 +69,15 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
       };
 
       await this._applyAuthToRequestConfig(httpCallTemplate, requestConfig);
-      const response = await this._axiosInstance.request(requestConfig);
+      // Re-validate every redirect hop. axios's default
+      // ``maxRedirects: 5`` would otherwise let an attacker-controlled
+      // discovery URL 302 us into an internal service
+      // (GHSA-9qhg-99ww-9mqc).
+      const response = await safeRequestWithRedirects(
+        this._axiosInstance,
+        requestConfig as any,
+        'manual discovery',
+      );
       const contentType = response.headers['content-type'] || '';
       let responseData: any;
 
@@ -191,7 +199,15 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
       }
 
       this._logInfo(`Executing HTTP tool '${toolName}' with URL: ${requestConfig.url} and method: ${requestConfig.method}`);
-      const response = await this._axiosInstance.request(requestConfig);
+      // Re-validate every redirect hop. axios's default
+      // ``maxRedirects: 5`` would otherwise let an attacker-controlled
+      // tool endpoint 302 us into an internal service and hand its
+      // body back to the caller (GHSA-9qhg-99ww-9mqc).
+      const response = await safeRequestWithRedirects(
+        this._axiosInstance,
+        requestConfig as any,
+        'tool invocation',
+      );
 
       const contentType = response.headers['content-type'] || '';
       if (contentType.includes('yaml') || url.endsWith('.yaml') || url.endsWith('.yml')) {
@@ -288,6 +304,14 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
       return cachedToken.accessToken;
     }
 
+    // The token URL ultimately comes from a call template, and call
+    // templates can be sourced from attacker-controlled OpenAPI specs
+    // (the OpenApiConverter copies ``tokenUrl`` from the spec).
+    // Validate it before posting credentials so a malicious spec
+    // cannot redirect ``client_id`` / ``client_secret`` exfiltration
+    // through this protocol -- see GHSA-8cp3-qxj6-px34.
+    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
+
     this._logInfo(`Fetching new OAuth2 token for client: '${clientId}'`);
     const tokenFetchPromises: Promise<string>[] = [];
 
@@ -301,10 +325,15 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
             'client_secret': authDetails.client_secret,
             'scope': authDetails.scope || ''
           });
-          const response = await this._axiosInstance.post(
-            authDetails.token_url,
-            bodyData.toString(),
-            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+          const response = await safeRequestWithRedirects(
+            this._axiosInstance,
+            {
+              method: 'POST',
+              url: authDetails.token_url,
+              data: bodyData.toString(),
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            },
+            'OAuth2 token fetch',
           );
           if (!response.data.access_token) {
             throw new Error("Access token not found in response.");
@@ -328,13 +357,16 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
             'grant_type': 'client_credentials',
             'scope': authDetails.scope || ''
           });
-          const response = await this._axiosInstance.post(
-            authDetails.token_url,
-            bodyData.toString(),
+          const response = await safeRequestWithRedirects(
+            this._axiosInstance,
             {
+              method: 'POST',
+              url: authDetails.token_url,
+              data: bodyData.toString(),
               auth: { username: authDetails.client_id, password: authDetails.client_secret },
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-            }
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            },
+            'OAuth2 token fetch',
           );
           if (!response.data.access_token) {
             throw new Error("Access token not found in response.");

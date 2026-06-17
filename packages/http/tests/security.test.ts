@@ -11,6 +11,38 @@ import { test, expect, describe } from 'bun:test';
 // the converter tries to validate the generated HttpCallTemplate.
 import '@utcp/http';
 import { isSecureUrl, isLoopbackUrl, ensureSecureUrl } from '../src/_security';
+
+// ---------------------------------------------------------------------------
+// Post-audit hardening: isLoopbackUrl must cover wildcard-bind addresses,
+// the entire 127.0.0.0/8 range, and IPv4-mapped IPv6 loopback forms,
+// because all of those route to local services on Linux / dual-stack
+// sockets.
+// ---------------------------------------------------------------------------
+
+describe('isLoopbackUrl extended coverage', () => {
+  test.each([
+    'http://0.0.0.0/',
+    'http://[::]/',
+    'http://127.0.0.2/',
+    'http://127.255.255.254/',
+    'http://[::ffff:127.0.0.1]/',
+    'http://[::ffff:7f00:1]/',
+    'https://0.0.0.0/',
+    'https://[::ffff:127.0.0.5]/',
+  ])('treats %s as loopback', (url) => {
+    expect(isLoopbackUrl(url)).toBe(true);
+  });
+
+  test.each([
+    'http://10.0.0.1/',
+    'http://192.168.1.1/',
+    'http://203.0.113.5/',
+    'http://[2001:db8::1]/',
+    'http://[::ffff:8.8.8.8]/',
+  ])('does NOT treat %s as loopback', (url) => {
+    expect(isLoopbackUrl(url)).toBe(false);
+  });
+});
 import { OpenApiConverter } from '../src/openapi_converter';
 
 describe('isSecureUrl', () => {

@@ -102,10 +102,17 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
       // SSE requires Accept: text/event-stream
       requestHeaders['Accept'] = 'text/event-stream';
 
-      // Build fetch options
+      // Build fetch options. ``redirect: 'error'`` refuses to follow
+      // 3xx responses on the SSE handshake -- the streaming response
+      // has to stay open for the lifetime of the tool call, which is
+      // incompatible with a per-hop revalidator, and SSE redirects
+      // are pathological in practice. Without this, an
+      // attacker-controlled endpoint could 302 the handshake into an
+      // internal service (GHSA-9qhg-99ww-9mqc).
       const fetchOptions: RequestInit = {
         method: 'GET',
         headers: requestHeaders,
+        redirect: 'error',
       };
 
       // Add basic auth if present
