@@ -13,23 +13,7 @@ import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
-import { ensureSecureUrl, safeRequestWithRedirects } from './_security';
-
-/**
- * Refuse CR/LF in attacker-influenceable strings that will land in HTTP
- * headers. Node's http stack already rejects these (it throws
- * ``ERR_INVALID_CHAR``), so this is defense-in-depth -- if the underlying
- * transport ever changes, we keep the trust boundary.
- */
-function assertNoCrlf(value: string | undefined, fieldName: string): void {
-  if (typeof value !== 'string') return;
-  if (value.includes('\r') || value.includes('\n')) {
-    throw new Error(
-      `Refusing to construct request: ${fieldName} contains CR/LF, ` +
-        `which would enable HTTP header injection.`,
-    );
-  }
-}
+import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf } from './_security';
 
 /**
  * HTTP communication protocol implementation for UTCP client.

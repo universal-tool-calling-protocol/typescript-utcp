@@ -14,19 +14,7 @@ import { OAuth2Auth } from '@utcp/sdk';
 import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { SseCallTemplate } from './sse_call_template';
-import { ensureSecureUrl } from './_security';
-
-/** Defense-in-depth: refuse CR/LF in attacker-influenceable strings
- *  that will land in HTTP headers. */
-function assertNoCrlf(value: string | undefined, fieldName: string): void {
-  if (typeof value !== 'string') return;
-  if (value.includes('\r') || value.includes('\n')) {
-    throw new Error(
-      `Refusing to construct request: ${fieldName} contains CR/LF, ` +
-        `which would enable HTTP header injection.`,
-    );
-  }
-}
+import { ensureSecureUrl, assertNoCrlf } from './_security';
 
 /**
  * REQUIRED

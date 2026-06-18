@@ -179,6 +179,37 @@ export function ensureSecureUrl(url: string, context?: string): void {
   );
 }
 
+/**
+ * Refuse CR/LF in attacker-influenceable strings that will land in
+ * HTTP headers.
+ *
+ * The underlying Node http stack already rejects CR/LF in header
+ * names/values (`ERR_INVALID_CHAR`), and axios + fetch ride that code
+ * path. This helper is defense-in-depth -- enforcing the trust
+ * boundary inside UTCP means a transport swap, polyfill, or future
+ * runtime change can't silently regress.
+ *
+ * Centralised here so every protocol in `@utcp/http` (http, sse,
+ * streamable_http) shares a single implementation and future fixes
+ * apply consistently. Mirrors `utcp_http._security._assert_no_crlf`
+ * from the Python reference implementation.
+ *
+ * @param value Any string field that will become part of an outbound
+ *   header (header name, prefix, or value).
+ * @param fieldName Short label included in the error so log readers
+ *   know which input was rejected.
+ * @throws Error if `value` contains `\r` or `\n`.
+ */
+export function assertNoCrlf(value: string | undefined, fieldName: string): void {
+  if (typeof value !== 'string') return;
+  if (value.includes('\r') || value.includes('\n')) {
+    throw new Error(
+      `Refusing to construct request: ${fieldName} contains CR/LF, ` +
+        `which would enable HTTP header injection.`,
+    );
+  }
+}
+
 // Local type alias avoids importing the full axios type surface here.
 // The helper is intentionally axios-agnostic at the type level so the
 // (de-facto small) request surface stays decoupled.
