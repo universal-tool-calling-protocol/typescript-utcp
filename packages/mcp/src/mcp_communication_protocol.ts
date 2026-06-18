@@ -8,8 +8,72 @@ import { RegisterManualResult } from '@utcp/sdk';
 import { CallTemplate } from '@utcp/sdk';
 import { UtcpManualSchema } from '@utcp/sdk';
 import { Tool, JsonSchema } from '@utcp/sdk';
-import { OAuth2Auth } from '@utcp/sdk';
-import { IUtcpClient } from '@utcp/sdk'; 
+import { Auth, OAuth2Auth, OAuth2UserAuth } from '@utcp/sdk';
+import { IUtcpClient } from '@utcp/sdk';
+
+/** Defense-in-depth: refuse CR/LF in attacker-influenceable strings
+ *  that will land in HTTP headers. */
+function assertNoCrlf(value: string | undefined, fieldName: string): void {
+  if (typeof value !== 'string') return;
+  if (value.includes('\r') || value.includes('\n')) {
+    throw new Error(
+      `Refusing to construct request: ${fieldName} contains CR/LF, ` +
+        `which would enable HTTP header injection.`,
+    );
+  }
+}
+
+/**
+ * Minimal HTTPS-or-loopback URL guard for the MCP HTTP transport.
+ * Mirrors the validator in `@utcp/http`'s `_security.ts` to keep MCP
+ * from being a back-door SSRF vector when the MCP call template comes
+ * from an attacker-influenceable source (e.g. a discovered manual).
+ * Hostname-based -- not prefix-based -- so the bypass from
+ * GHSA-39j6-4867-gg4w / CVE-2026-44661 (`http://localhost.evil.com`)
+ * is rejected.
+ */
+const MCP_LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set([
+  'localhost',
+  '127.0.0.1',
+  '::1',
+]);
+
+function ensureSecureMcpUrl(rawUrl: string, context: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(
+      `Security error during ${context}: not a valid URL: ${JSON.stringify(rawUrl)}.`,
+    );
+  }
+  const scheme = parsed.protocol.toLowerCase();
+  let host = parsed.hostname.toLowerCase();
+  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
+  if (scheme === 'https:') return;
+  if (scheme === 'http:' && MCP_LOOPBACK_HOSTNAMES.has(host)) return;
+  // Match the broader 127.0.0.0/8 + 0.0.0.0 + IPv4-mapped IPv6
+  // loopback set that ``isLoopbackUrl`` in @utcp/http covers, so an
+  // attacker can't paper over the hostname check with `127.0.0.2`.
+  if (scheme === 'http:') {
+    const v4 = host.match(/^(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}$/);
+    if (v4 && parseInt(v4[1], 10) === 127) return;
+    if (host === '0.0.0.0' || host === '::') return;
+    if (host.startsWith('::ffff:')) {
+      const tail = host.slice('::ffff:'.length);
+      const tailV4 = tail.match(/^(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}$/);
+      if (tailV4 && parseInt(tailV4[1], 10) === 127) return;
+      const tailHex = tail.match(/^([0-9a-f]{1,4}):[0-9a-f]{1,4}$/);
+      if (tailHex && ((parseInt(tailHex[1], 16) >>> 8) & 0xff) === 127) return;
+    }
+  }
+  throw new Error(
+    `Security error during ${context}: URL must use HTTPS or be a literal ` +
+      `loopback address. Got: ${JSON.stringify(rawUrl)}. Plain HTTP to any ` +
+      `other host is rejected to prevent MITM attacks and SSRF into ` +
+      `internal services.`,
+  );
+}
 import { McpCallTemplateSchema, McpHttpServer, McpServerConfig, McpStdioServer } from './mcp_call_template';
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import $RefParser from '@apidevtools/json-schema-ref-parser';
@@ -103,7 +167,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   private async _getOrCreateSession(
     serverName: string,
     serverConfig: McpServerConfig,
-    auth?: OAuth2Auth
+    auth?: Auth
   ): Promise<McpClient> {
     const sessionKey = `${serverName}:${serverConfig.transport}`;
 
@@ -134,10 +198,29 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
     } else if (serverConfig.transport === 'http') {
       const httpConfig = serverConfig as McpHttpServer;
+      // Reject plain-HTTP non-loopback URLs and obvious SSRF targets
+      // before any connection attempt. Matches the trust boundary
+      // @utcp/http enforces for its own discovery / invocation URLs.
+      ensureSecureMcpUrl(httpConfig.url, 'MCP HTTP transport');
       let authHeader: Record<string, string> = {};
       if (auth) {
-        const token = await this._handleOAuth2(auth);
-        authHeader['Authorization'] = `Bearer ${token}`;
+        if (auth.auth_type === 'oauth2_user') {
+          // Interactive (user-delegated) OAuth2: token provisioned out-of-band
+          // by a login tool (e.g. `code-mode login <manual>`). No fetch here.
+          const userAuth = auth as OAuth2UserAuth;
+          if (!userAuth.access_token) {
+            throw new Error("access_token for oauth2_user auth is empty. Run an interactive login (e.g. `code-mode login <manual>`) to provision it.");
+          }
+          const headerName = userAuth.var_name || 'Authorization';
+          const prefix = userAuth.prefix ?? 'Bearer ';
+          assertNoCrlf(headerName, 'OAuth2UserAuth.var_name');
+          assertNoCrlf(prefix, 'OAuth2UserAuth.prefix');
+          assertNoCrlf(userAuth.access_token, 'OAuth2UserAuth.access_token');
+          authHeader[headerName] = `${prefix}${userAuth.access_token}`;
+        } else {
+          const token = await this._handleOAuth2(auth as OAuth2Auth);
+          authHeader['Authorization'] = `Bearer ${token}`;
+        }
       }
 
       const transportOptions: StreamableHTTPClientTransportOptions = {
@@ -173,7 +256,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   private async _withSession<T>(
     serverName: string,
     serverConfig: McpServerConfig,
-    auth: OAuth2Auth | undefined,
+    auth: Auth | undefined,
     operation: (client: McpClient) => Promise<T>
   ): Promise<T> {
     const sessionKey = `${serverName}:${serverConfig.transport}`;

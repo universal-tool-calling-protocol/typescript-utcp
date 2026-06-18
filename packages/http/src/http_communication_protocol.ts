@@ -9,10 +9,11 @@ import { UtcpManualSchema } from '@utcp/sdk';
 import { ApiKeyAuth } from '@utcp/sdk'; 
 import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
-import { IUtcpClient } from '@utcp/sdk'; 
+import { OAuth2UserAuth } from '@utcp/sdk';
+import { IUtcpClient } from '@utcp/sdk';
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
-import { ensureSecureUrl, safeRequestWithRedirects } from './_security';
+import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf } from './_security';
 
 /**
  * HTTP communication protocol implementation for UTCP client.
@@ -68,15 +69,18 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         timeout: 10000
       };
 
-      await this._applyAuthToRequestConfig(httpCallTemplate, requestConfig);
+      const { authHeaderNames } = await this._applyAuthToRequestConfig(httpCallTemplate, requestConfig);
       // Re-validate every redirect hop. axios's default
       // ``maxRedirects: 5`` would otherwise let an attacker-controlled
       // discovery URL 302 us into an internal service
-      // (GHSA-9qhg-99ww-9mqc).
+      // (GHSA-9qhg-99ww-9mqc). ``authHeaderNames`` extends the scrub
+      // so custom-named auth headers also get stripped cross-origin.
       const response = await safeRequestWithRedirects(
         this._axiosInstance,
         requestConfig as any,
         'manual discovery',
+        undefined,
+        authHeaderNames,
       );
       const contentType = response.headers['content-type'] || '';
       let responseData: any;
@@ -188,7 +192,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
       timeout: httpCallTemplate.timeout
     };
 
-    await this._applyAuthToRequestConfig(httpCallTemplate, requestConfig);
+    const { authHeaderNames } = await this._applyAuthToRequestConfig(httpCallTemplate, requestConfig);
 
     try {
       if (bodyContent !== undefined && !('Content-Type' in (requestConfig.headers || {}))) {
@@ -207,6 +211,8 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         this._axiosInstance,
         requestConfig as any,
         'tool invocation',
+        undefined,
+        authHeaderNames,
       );
 
       const contentType = response.headers['content-type'] || '';
@@ -248,15 +254,27 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
   }
 
   /**
-   * Applies authentication details from the HttpCallTemplate to the Axios request configuration.
-   * This modifies `requestConfig.headers`, `requestConfig.params`, `requestConfig.auth`, and returns cookies.
+   * Applies authentication details from the HttpCallTemplate to the
+   * Axios request configuration. This modifies `requestConfig.headers`,
+   * `requestConfig.params`, `requestConfig.auth`, and returns cookies
+   * plus the list of header names that received a secret.
+   *
+   * The header-name list is threaded through to `safeRequestWithRedirects`
+   * so a custom-named API-key / OAuth2-user header is also stripped on
+   * cross-origin redirect -- without this, an `ApiKeyAuth` with
+   * `var_name: "X-MyApp"` would survive the scrub because the name
+   * doesn't match the auth-pattern regex.
    *
    * @param httpCallTemplate The CallTemplate containing authentication details.
    * @param requestConfig The Axios request configuration to modify.
-   * @returns A Promise that resolves to an object containing any cookies to be set.
+   * @returns Promise resolving to `{ cookies, authHeaderNames }`.
    */
-  private async _applyAuthToRequestConfig(httpCallTemplate: HttpCallTemplate, requestConfig: AxiosRequestConfig): Promise<Record<string, string>> {
+  private async _applyAuthToRequestConfig(
+    httpCallTemplate: HttpCallTemplate,
+    requestConfig: AxiosRequestConfig,
+  ): Promise<{ cookies: Record<string, string>; authHeaderNames: string[] }> {
     const cookies: Record<string, string> = {};
+    const authHeaderNames: string[] = [];
 
     if (httpCallTemplate.auth) {
       if (httpCallTemplate.auth.auth_type === 'api_key') {
@@ -264,10 +282,12 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         if (!apiKeyAuth.api_key) {
           throw new Error("API key for ApiKeyAuth is empty.");
         }
+        assertNoCrlf(apiKeyAuth.var_name, 'ApiKeyAuth.var_name');
         // Default to 'header' if location is not specified
         const location = apiKeyAuth.location || 'header';
         if (location === 'header') {
           requestConfig.headers = { ...requestConfig.headers, [apiKeyAuth.var_name]: apiKeyAuth.api_key };
+          authHeaderNames.push(apiKeyAuth.var_name);
         } else if (location === 'query') {
           requestConfig.params = { ...requestConfig.params, [apiKeyAuth.var_name]: apiKeyAuth.api_key };
         } else if (location === 'cookie') {
@@ -279,13 +299,31 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
           username: basicAuth.username,
           password: basicAuth.password
         };
+        // axios sets the ``Authorization: Basic ...`` header from
+        // ``config.auth``. The scrubber strips ``config.auth``
+        // directly on cross-origin, so no name to track here.
       } else if (httpCallTemplate.auth.auth_type === 'oauth2') {
         const oauth2Auth = httpCallTemplate.auth as OAuth2Auth;
         const token = await this._handleOAuth2(oauth2Auth);
         requestConfig.headers = { ...requestConfig.headers, 'Authorization': `Bearer ${token}` };
+        authHeaderNames.push('Authorization');
+      } else if (httpCallTemplate.auth.auth_type === 'oauth2_user') {
+        // Interactive (user-delegated) OAuth2: the token is provisioned out-of-band
+        // by a login tool and injected here. UTCP never runs the interactive flow.
+        const userAuth = httpCallTemplate.auth as OAuth2UserAuth;
+        if (!userAuth.access_token) {
+          throw new Error("access_token for oauth2_user auth is empty. Run an interactive login (e.g. `code-mode login <manual>`) to provision it.");
+        }
+        const headerName = userAuth.var_name || 'Authorization';
+        const prefix = userAuth.prefix ?? 'Bearer ';
+        assertNoCrlf(headerName, 'OAuth2UserAuth.var_name');
+        assertNoCrlf(prefix, 'OAuth2UserAuth.prefix');
+        assertNoCrlf(userAuth.access_token, 'OAuth2UserAuth.access_token');
+        requestConfig.headers = { ...requestConfig.headers, [headerName]: `${prefix}${userAuth.access_token}` };
+        authHeaderNames.push(headerName);
       }
     }
-    return cookies;
+    return { cookies, authHeaderNames };
   }
 
   /**

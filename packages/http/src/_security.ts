@@ -179,6 +179,37 @@ export function ensureSecureUrl(url: string, context?: string): void {
   );
 }
 
+/**
+ * Refuse CR/LF in attacker-influenceable strings that will land in
+ * HTTP headers.
+ *
+ * The underlying Node http stack already rejects CR/LF in header
+ * names/values (`ERR_INVALID_CHAR`), and axios + fetch ride that code
+ * path. This helper is defense-in-depth -- enforcing the trust
+ * boundary inside UTCP means a transport swap, polyfill, or future
+ * runtime change can't silently regress.
+ *
+ * Centralised here so every protocol in `@utcp/http` (http, sse,
+ * streamable_http) shares a single implementation and future fixes
+ * apply consistently. Mirrors `utcp_http._security._assert_no_crlf`
+ * from the Python reference implementation.
+ *
+ * @param value Any string field that will become part of an outbound
+ *   header (header name, prefix, or value).
+ * @param fieldName Short label included in the error so log readers
+ *   know which input was rejected.
+ * @throws Error if `value` contains `\r` or `\n`.
+ */
+export function assertNoCrlf(value: string | undefined, fieldName: string): void {
+  if (typeof value !== 'string') return;
+  if (value.includes('\r') || value.includes('\n')) {
+    throw new Error(
+      `Refusing to construct request: ${fieldName} contains CR/LF, ` +
+        `which would enable HTTP header injection.`,
+    );
+  }
+}
+
 // Local type alias avoids importing the full axios type surface here.
 // The helper is intentionally axios-agnostic at the type level so the
 // (de-facto small) request surface stays decoupled.
@@ -298,12 +329,22 @@ function sameOrigin(a: string, b: string): boolean {
  *     exact credentials we're trying to protect. Refuse to resend it
  *     cross-origin.
  */
-function scrubCrossOriginCredentials(config: Record<string, any>): void {
+function scrubCrossOriginCredentials(
+  config: Record<string, any>,
+  extraAuthHeaderNames: ReadonlySet<string> = new Set<string>(),
+): void {
   const headers = config.headers;
   if (headers && typeof headers === 'object') {
     const scrubbed: Record<string, any> = {};
     for (const [k, v] of Object.entries(headers)) {
       if (headerIsAuthSensitive(k)) continue;
+      // Strip caller-configured auth header names too -- e.g. an
+      // `ApiKeyAuth` with `var_name: "X-MyApp"` whose name doesn't
+      // match the auth-pattern regex. Without this, custom auth
+      // header names survive cross-origin redirects.
+      if (typeof k === 'string' && extraAuthHeaderNames.has(k.toLowerCase())) {
+        continue;
+      }
       scrubbed[k] = v;
     }
     config.headers = scrubbed;
@@ -344,6 +385,7 @@ export async function safeRequestWithRedirects<T = any>(
   config: { url: string; method: string; data?: any; [key: string]: any },
   context: string,
   maxHops: number = 5,
+  authHeaderNames: ReadonlyArray<string> = [],
 ): Promise<{ status: number; headers: Record<string, any>; data: T }> {
   ensureSecureUrl(config.url, context);
 
@@ -356,6 +398,17 @@ export async function safeRequestWithRedirects<T = any>(
   if (working.headers && typeof working.headers === 'object') {
     working.headers = { ...working.headers };
   }
+
+  // ``authHeaderNames`` is the explicit declaration of which header
+  // names the caller populated with a secret. Used to extend the
+  // cross-origin scrub beyond the canonical set so a custom-named
+  // API-key header (e.g. ``X-MyApp``) configured via ``ApiKeyAuth``
+  // / ``OAuth2UserAuth`` is also stripped on cross-origin redirect.
+  const extraAuthHeaderNames: ReadonlySet<string> = new Set(
+    authHeaderNames
+      .filter((n): n is string => typeof n === 'string')
+      .map((n) => n.toLowerCase()),
+  );
 
   let currentUrl = working.url;
   let hops = 0;
@@ -398,7 +451,7 @@ export async function safeRequestWithRedirects<T = any>(
     // server and our ``Authorization`` header / basic ``auth`` /
     // ``params`` API key would be forwarded along.
     if (!sameOrigin(currentUrl, nextUrl)) {
-      scrubCrossOriginCredentials(working);
+      scrubCrossOriginCredentials(working, extraAuthHeaderNames);
     }
 
     if (response.status === 303) {

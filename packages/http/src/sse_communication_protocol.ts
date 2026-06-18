@@ -11,9 +11,10 @@ import { UtcpManual, UtcpManualSerializer } from '@utcp/sdk';
 import { ApiKeyAuth } from '@utcp/sdk';
 import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
+import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { SseCallTemplate } from './sse_call_template';
-import { ensureSecureUrl } from './_security';
+import { ensureSecureUrl, assertNoCrlf } from './_security';
 
 /**
  * REQUIRED
@@ -44,6 +45,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
       if ('api_key' in provider.auth) {
         const apiKeyAuth = provider.auth as ApiKeyAuth;
         if (apiKeyAuth.api_key) {
+          assertNoCrlf(apiKeyAuth.var_name, 'ApiKeyAuth.var_name');
           // Default to 'header' if location is not specified
           const location = apiKeyAuth.location || 'header';
           if (location === 'header') {
@@ -62,6 +64,21 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         auth = { username: basicAuth.username, password: basicAuth.password };
       } else if ('token_url' in provider.auth) {
         // OAuth2 will be handled separately
+      } else if (provider.auth.auth_type === 'oauth2_user') {
+        // Interactive (user-delegated) OAuth2: token provisioned out-of-band.
+        const userAuth = provider.auth as OAuth2UserAuth;
+        if (!userAuth.access_token) {
+          throw new Error(
+            "access_token for oauth2_user auth is empty. Run an interactive " +
+              "login to provision it.",
+          );
+        }
+        const headerName = userAuth.var_name || 'Authorization';
+        const prefix = userAuth.prefix ?? 'Bearer ';
+        assertNoCrlf(headerName, 'OAuth2UserAuth.var_name');
+        assertNoCrlf(prefix, 'OAuth2UserAuth.prefix');
+        assertNoCrlf(userAuth.access_token, 'OAuth2UserAuth.access_token');
+        headers[headerName] = `${prefix}${userAuth.access_token}`;
       }
     }
 
