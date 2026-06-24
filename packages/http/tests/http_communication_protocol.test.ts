@@ -3,7 +3,12 @@ import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import express, { Express } from 'express';
 import { Server } from 'http';
 // Import from package index to trigger auto-registration
-import { HttpCommunicationProtocol, HttpCallTemplate } from "@utcp/http";
+import {
+  HttpCommunicationProtocol,
+  HttpCallTemplate,
+  StreamableHttpCommunicationProtocol,
+  SseCommunicationProtocol,
+} from "@utcp/http";
 import { ApiKeyAuth, BasicAuth, OAuth2Auth } from "@utcp/sdk";
 import { IUtcpClient } from "@utcp/sdk";
 
@@ -66,6 +71,11 @@ beforeAll(async () => {
   // refuses a call. Used to prove callTool surfaces that body, not just the status.
   app.post("/forbidden", (req, res) => {
     res.status(403).json({ error: "You are not allowed to do that, and here is exactly why." });
+  });
+
+  // GET variant for the streamable/sse discovery (registerManual) error-body test.
+  app.get("/forbidden-discovery", (req, res) => {
+    res.status(403).send("discovery refused: tenant is not provisioned for streaming");
   });
 
   await new Promise<void>((resolve) => {
@@ -221,5 +231,39 @@ describe("HttpCommunicationProtocol", () => {
       expect(roundTripped.status).toBe(403);
       expect(roundTripped.data).toEqual({ error: "You are not allowed to do that, and here is exactly why." });
     });
+  });
+});
+
+// The streamable/sse protocols' callTool paths are stubs; the only real fetch
+// that can fail with a body is in registerManual (discovery). These prove that
+// failure surfaces the server's body, not just "HTTP 403: Forbidden".
+describe("discovery error body (streamable_http + sse)", () => {
+  test("StreamableHttpCommunicationProtocol.registerManual surfaces the server body", async () => {
+    const protocol = new StreamableHttpCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "forbidden_stream",
+      call_template_type: "streamable_http",
+      url: `http://localhost:${serverPort}/forbidden-discovery`,
+      http_method: "GET",
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
+    expect(result.errors[0]).toContain("403");
+  });
+
+  test("SseCommunicationProtocol.registerManual surfaces the server body", async () => {
+    const protocol = new SseCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "forbidden_sse",
+      call_template_type: "sse",
+      url: `http://localhost:${serverPort}/forbidden-discovery`,
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
+    expect(result.errors[0]).toContain("403");
   });
 });

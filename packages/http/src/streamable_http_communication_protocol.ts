@@ -168,7 +168,12 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
         });
 
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          // Read the body before throwing: servers put the real reason there
+          // (e.g. { "error": "..." }); discarding it leaves callers with only a
+          // status code. Fall back to statusText when the body is empty.
+          const body = await response.text().catch(() => '');
+          const detail = body.trim() || response.statusText;
+          throw new Error(`HTTP ${response.status}: ${detail}`);
         }
 
         const responseText = await response.text();
