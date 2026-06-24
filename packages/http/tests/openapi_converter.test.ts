@@ -203,6 +203,88 @@ describe('OpenApiConverter examples', () => {
     expect(tool.outputs.examples).toEqual(['ok', 'done']);
   });
 
+  test('de-dups examples order-insensitively but keeps distinct types', () => {
+    const spec = {
+      openapi: '3.0.0',
+      info: { title: 'Test API', version: '1.0.0' },
+      paths: {
+        '/items': {
+          post: {
+            operationId: 'createItem',
+            requestBody: {
+              content: {
+                'application/json': {
+                  // media-type example with one key order...
+                  examples: { e1: { value: { a: 1, b: 2 } } },
+                  schema: {
+                    type: 'object',
+                    // ...schema example with the other key order (should de-dup to one)
+                    examples: [{ b: 2, a: 1 }],
+                  },
+                },
+              },
+            },
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      // true and 1 are distinct examples and must both survive
+                      examples: [true, 1, true],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const manual = new OpenApiConverter(spec).convert();
+    const tool = manual.tools.find(t => t.name === 'createItem')!;
+
+    // {a:1,b:2} and {b:2,a:1} are the same example -> collapsed to one
+    expect(tool.inputs.properties!.body.examples).toEqual([{ a: 1, b: 2 }]);
+    // true vs 1 kept distinct; duplicate true removed
+    expect(tool.outputs.examples).toEqual([true, 1]);
+  });
+
+  test('a non-JSON example value does not abort conversion', () => {
+    const spec = {
+      openapi: '3.1.0',
+      info: { title: 'Test API', version: '1.0.0' },
+      paths: {
+        '/calc': {
+          post: {
+            operationId: 'calc',
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'number',
+                    // NaN is not valid JSON; must be dropped, not throw
+                    examples: [NaN, 1.5],
+                  },
+                },
+              },
+            },
+            responses: { '200': { description: 'ok' } },
+          },
+        },
+      },
+    };
+
+    let manual!: ReturnType<OpenApiConverter['convert']>;
+    expect(() => { manual = new OpenApiConverter(spec).convert(); }).not.toThrow();
+    const tool = manual.tools.find(t => t.name === 'calc')!;
+    expect(tool).toBeDefined();
+    // NaN dropped, the valid example kept
+    expect(tool.inputs.properties!.body.examples).toEqual([1.5]);
+  });
+
   test('skips operations with unsupported HTTP methods', () => {
     const spec = {
       openapi: '3.0.0',
