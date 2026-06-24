@@ -18,7 +18,7 @@
  * defined by OpenAPI specifications, providing a bridge between OpenAPI and UTCP.
  */
 // packages/http/src/openapi_converter.ts
-import { Tool, JsonSchemaSchema, JsonSchema } from '@utcp/sdk';
+import { Tool, JsonSchemaSchema, JsonSchema, JsonType } from '@utcp/sdk';
 import { UtcpManual, UtcpManualSerializer } from '@utcp/sdk';
 import { Auth } from '@utcp/sdk';
 import { ApiKeyAuth } from '@utcp/sdk';
@@ -26,6 +26,22 @@ import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { HttpCallTemplate } from './http_call_template';
 import { ensureSecureUrl, isLoopbackUrl } from './_security';
+
+/**
+ * All HTTP methods that OpenAPI defines as operation fields on a Path Item
+ * Object. Used by the conversion loop to tell operations apart from the other
+ * path-item keys (parameters, summary, $ref, servers, ...), so that genuinely
+ * unsupported operations still reach _createTool and get a warning rather than
+ * being silently dropped here.
+ */
+const OPENAPI_OPERATION_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
+
+/**
+ * The subset of HTTP methods that HttpCallTemplate.http_method accepts.
+ * _createTool validates against this and skips anything else with a warning.
+ */
+const SUPPORTED_HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
+type SupportedHttpMethod = typeof SUPPORTED_HTTP_METHODS[number];
 
 /**
  * Options for the OpenAPI converter.
@@ -181,7 +197,7 @@ export class OpenApiConverter {
     const paths = this.spec.paths || {};
     for (const [path, pathItem] of Object.entries(paths)) {
       for (const [method, operation] of Object.entries(pathItem as Record<string, any>)) {
-        if (['get', 'post', 'put', 'delete', 'patch'].includes(method.toLowerCase())) {
+        if ((OPENAPI_OPERATION_METHODS as readonly string[]).includes(method.toLowerCase())) {
           const tool = this._createTool(path, method, operation, baseUrl);
           if (tool) {
             tools.push(tool);
@@ -258,6 +274,142 @@ export class OpenApiConverter {
   }
 
   /**
+   * Extracts examples from an OpenAPI Parameter, Media Type, or Schema object.
+   *
+   * Handles all three shapes the spec allows:
+   *   - `example` (single value) — OpenAPI Parameter / Media Type / 3.0 Schema.
+   *   - `examples` as a map of named Example Objects — OpenAPI Parameter /
+   *     Media Type Object (each entry carries an inline `value`).
+   *   - `examples` as an array of literal values — JSON Schema / OpenAPI 3.1
+   *     Schema Object.
+   *
+   * Returns a list of example values suitable for the JSON Schema `examples`
+   * keyword, or undefined when none are present.
+   */
+  private _extractExamples(obj: Record<string, any> | undefined | null): JsonType[] | undefined {
+    if (!obj || typeof obj !== 'object') {
+      return undefined;
+    }
+
+    const examples: JsonType[] = [];
+
+    // Handle single 'example' field
+    if ('example' in obj && obj.example !== undefined && obj.example !== null) {
+      examples.push(obj.example);
+    }
+
+    if ('examples' in obj && obj.examples) {
+      if (Array.isArray(obj.examples)) {
+        // JSON Schema / OpenAPI 3.1 Schema form: a plain array of example values.
+        for (const ex of obj.examples) {
+          examples.push(ex);
+        }
+      } else if (typeof obj.examples === 'object') {
+        // OpenAPI 3.0 form: a map of named Example Objects.
+        for (let exampleObj of Object.values(obj.examples) as any[]) {
+          if (exampleObj && typeof exampleObj === 'object' && '$ref' in exampleObj) {
+            exampleObj = this._resolveSchema(exampleObj) ?? {};
+          }
+          if (exampleObj && typeof exampleObj === 'object') {
+            // Example Object can have 'value' or 'externalValue'
+            if ('value' in exampleObj) {
+              examples.push(exampleObj.value);
+            }
+            // Note: externalValue is a URI reference, we skip it as it's not inline
+          }
+        }
+      }
+    }
+
+    return examples.length > 0 ? examples : undefined;
+  }
+
+  /**
+   * Whether a value is representable as JSON (and therefore as a valid JsonType
+   * once it reaches JsonSchemaSchema.parse). Non-finite numbers (NaN/Infinity)
+   * and `undefined` are not, and would otherwise make the zod parse throw and
+   * abort the entire conversion. Such example values are dropped instead.
+   */
+  private _isJsonSafe(value: any): boolean {
+    if (value === null) return true;
+    if (Array.isArray(value)) return value.every(v => this._isJsonSafe(v));
+    switch (typeof value) {
+      case 'string':
+      case 'boolean':
+        return true;
+      case 'number':
+        return Number.isFinite(value); // reject NaN / Infinity
+      case 'object':
+        return Object.values(value).every(v => this._isJsonSafe(v));
+      default:
+        // undefined, bigint, symbol, function: not representable as JSON.
+        // (bigint would even throw inside JSON.stringify during de-dup.)
+        return false;
+    }
+  }
+
+  /**
+   * Order-insensitive, type-aware canonical key for de-duplicating example
+   * values: object keys are sorted recursively before serialization, so
+   * `{a:1,b:2}` and `{b:2,a:1}` collapse, while `true`/`1` stay distinct.
+   */
+  private _exampleKey(value: JsonType): string {
+    const canon = (v: any): any => {
+      if (Array.isArray(v)) return v.map(canon);
+      if (v !== null && typeof v === 'object') {
+        return Object.keys(v).sort().reduce((acc: Record<string, any>, k) => {
+          acc[k] = canon(v[k]);
+          return acc;
+        }, {});
+      }
+      return v;
+    };
+    return JSON.stringify(canon(value));
+  }
+
+  /**
+   * Collects and de-duplicates examples from several OpenAPI objects, preserving order.
+   *
+   * Used to combine examples that can appear at more than one level for the
+   * same value, e.g. a Media Type Object and the Schema Object beneath it.
+   */
+  private _mergeExamples(...objs: Array<Record<string, any> | undefined | null>): JsonType[] | undefined {
+    const merged: JsonType[] = [];
+    const seen = new Set<string>();
+    for (const obj of objs) {
+      const extracted = this._extractExamples(obj);
+      if (!extracted) continue;
+      for (const ex of extracted) {
+        // Drop values that aren't valid JSON so a single bad example can't make
+        // JsonSchemaSchema.parse throw and abort the whole conversion.
+        if (!this._isJsonSafe(ex)) continue;
+        const key = this._exampleKey(ex);
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(ex);
+        }
+      }
+    }
+    return merged.length > 0 ? merged : undefined;
+  }
+
+  /**
+   * Returns a copy of a schema object with the raw `example`/`examples` keys removed.
+   *
+   * Examples are normalized into the JSON Schema `examples` keyword via
+   * _mergeExamples, so the raw OpenAPI keys must not be spread back onto the
+   * property or they would leak through as untyped extra fields.
+   */
+  private _schemaWithoutExampleKeys(schema: Record<string, any>): Record<string, any> {
+    const out: Record<string, any> = {};
+    for (const [key, value] of Object.entries(schema)) {
+      if (key === 'example' || key === 'examples') continue;
+      out[key] = value;
+    }
+    return out;
+  }
+
+  /**
    * Creates a Tool object from an OpenAPI operation.
    * @param path The API path.
    * @param method The HTTP method (GET, POST, etc.).
@@ -276,6 +428,18 @@ export class OpenApiConverter {
       return null;
     }
 
+    // Validate the HTTP method against what HttpCallTemplate accepts before
+    // building the tool. OpenAPI allows operations like 'options'/'head'/'trace'
+    // that the call template's union type does not cover; skip them with a
+    // warning instead of emitting a tool with an invalid method. This explicit
+    // check is also what makes the cast below truthful rather than a blind
+    // assertion.
+    const httpMethod = method.toUpperCase();
+    if (!(SUPPORTED_HTTP_METHODS as readonly string[]).includes(httpMethod)) {
+      console.warn(`[OpenApiConverter] Skipping operation '${operationId}': unsupported HTTP method '${method}'.`);
+      return null;
+    }
+
     const description = operation.summary || operation.description || '';
     const tags = operation.tags || [];
 
@@ -287,7 +451,7 @@ export class OpenApiConverter {
     const callTemplate: HttpCallTemplate = {
       name: this.call_template_name,
       call_template_type: 'http',
-      http_method: method.toUpperCase() as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+      http_method: httpMethod as SupportedHttpMethod,
       url: fullUrl,
       body_field: bodyField ?? undefined,
       header_fields: headerFields.length > 0 ? headerFields : undefined,
@@ -339,10 +503,16 @@ export class OpenApiConverter {
       if (resolvedParam.in === 'body') {
         bodyField = 'body';
         const jsonSchema = this._resolveSchema(resolvedParam.schema || {});
+        // Examples can live on the parameter itself and on its schema;
+        // collect both into the normalized 'examples' keyword.
+        const bodyExamples = this._mergeExamples(resolvedParam, jsonSchema);
         properties[bodyField] = {
           description: resolvedParam.description || 'Request body',
-          ...jsonSchema,
+          ...this._schemaWithoutExampleKeys(jsonSchema),
         };
+        if (bodyExamples) {
+          properties[bodyField].examples = bodyExamples;
+        }
         if (resolvedParam.required) {
           required.push(bodyField);
         }
@@ -356,11 +526,16 @@ export class OpenApiConverter {
       if (!schema.items && resolvedParam.items) schema.items = resolvedParam.items;
       if (!schema.enum && resolvedParam.enum) schema.enum = resolvedParam.enum;
 
-
+      // Examples can live on the parameter itself and on its schema;
+      // collect both into the normalized 'examples' keyword.
+      const paramExamples = this._mergeExamples(resolvedParam, schema);
       properties[paramName] = {
         description: resolvedParam.description || '',
-        ...schema,
+        ...this._schemaWithoutExampleKeys(schema),
       };
+      if (paramExamples) {
+        properties[paramName].examples = paramExamples;
+      }
       if (resolvedParam.required) {
         required.push(paramName);
       }
@@ -371,14 +546,22 @@ export class OpenApiConverter {
     if (requestBody) {
       const resolvedBody = this._resolveSchema(requestBody);
       const content = resolvedBody.content || {};
+      const mediaTypeObj = content['application/json'] || content['application/x-www-form-urlencoded'];
       const jsonSchema = content['application/json']?.schema || content['application/x-www-form-urlencoded']?.schema;
 
       if (jsonSchema) {
         bodyField = 'body';
+        const resolvedJsonSchema = this._resolveSchema(jsonSchema);
+        // Examples can live on the media type object and on the schema;
+        // collect both into the normalized 'examples' keyword.
+        const bodyExamples = this._mergeExamples(mediaTypeObj, resolvedJsonSchema);
         properties[bodyField] = {
           description: resolvedBody.description || 'Request body',
-          ...this._resolveSchema(jsonSchema),
+          ...this._schemaWithoutExampleKeys(resolvedJsonSchema),
         };
+        if (bodyExamples) {
+          properties[bodyField].examples = bodyExamples;
+        }
         if (resolvedBody.required) {
           required.push(bodyField);
         }
@@ -410,15 +593,18 @@ export class OpenApiConverter {
 
     const resolvedResponse = this._resolveSchema(successResponse);
     let jsonSchema: any = null;
+    let mediaTypeObj: any = null;
 
     if ('content' in resolvedResponse) { // OpenAPI 3.0
       const content = resolvedResponse.content || {};
+      mediaTypeObj = content['application/json'] || content['text/plain'] || null;
       jsonSchema = content['application/json']?.schema || content['text/plain']?.schema;
       if (!jsonSchema && Object.keys(content).length > 0) {
         // Fallback to first content type's schema, with a type guard
         const firstContentTypeValue = Object.values(content)[0];
         if (typeof firstContentTypeValue === 'object' && firstContentTypeValue !== null && 'schema' in firstContentTypeValue) {
           jsonSchema = (firstContentTypeValue as { schema: any }).schema;
+          mediaTypeObj = firstContentTypeValue;
         }
       }
     } else if ('schema' in resolvedResponse) { // OpenAPI 2.0
@@ -430,6 +616,9 @@ export class OpenApiConverter {
     }
 
     const resolvedJsonSchema = this._resolveSchema(jsonSchema);
+    // Examples can live on the response media type object and on the schema;
+    // collect both into the normalized 'examples' keyword.
+    const responseExamples = this._mergeExamples(mediaTypeObj, resolvedJsonSchema);
     const schemaArgs: JsonSchema = {
       type: resolvedJsonSchema.type || 'object',
       properties: resolvedJsonSchema.properties || undefined,
@@ -442,6 +631,9 @@ export class OpenApiConverter {
       maximum: resolvedJsonSchema.maximum || undefined,
       format: resolvedJsonSchema.format || undefined,
     };
+    if (responseExamples) {
+      schemaArgs.examples = responseExamples;
+    }
 
     return schemaArgs;
   }
