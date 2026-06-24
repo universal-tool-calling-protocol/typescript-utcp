@@ -75,6 +75,10 @@ export interface JsonSchema {
    */
   default?: JsonType;
   /**
+   * Example values for the schema (JSON Schema 'examples' keyword).
+   */
+  examples?: JsonType[];
+  /**
    * Optional format hint (e.g., 'date-time', 'email').
    */
   format?: string;
@@ -124,6 +128,7 @@ export const JsonSchemaSchema: z.ZodType<JsonSchema> = z.lazy(() => z.object({
   enum: z.array(JsonTypeSchema).optional(),
   const: JsonTypeSchema.optional(),
   default: JsonTypeSchema.optional(),
+  examples: z.array(JsonTypeSchema).optional(),
   format: z.string().optional(),
   additionalProperties: z.union([z.boolean(), z.lazy(() => JsonSchemaSchema)]).optional(),
   pattern: z.string().optional(),
