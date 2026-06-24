@@ -28,9 +28,17 @@ import { HttpCallTemplate } from './http_call_template';
 import { ensureSecureUrl, isLoopbackUrl } from './_security';
 
 /**
- * HTTP methods that HttpCallTemplate.http_method accepts. Kept as the single
- * source of truth for both the operation loop filter and per-operation
- * validation so the two can never drift apart.
+ * All HTTP methods that OpenAPI defines as operation fields on a Path Item
+ * Object. Used by the conversion loop to tell operations apart from the other
+ * path-item keys (parameters, summary, $ref, servers, ...), so that genuinely
+ * unsupported operations still reach _createTool and get a warning rather than
+ * being silently dropped here.
+ */
+const OPENAPI_OPERATION_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'] as const;
+
+/**
+ * The subset of HTTP methods that HttpCallTemplate.http_method accepts.
+ * _createTool validates against this and skips anything else with a warning.
  */
 const SUPPORTED_HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
 type SupportedHttpMethod = typeof SUPPORTED_HTTP_METHODS[number];
@@ -189,7 +197,7 @@ export class OpenApiConverter {
     const paths = this.spec.paths || {};
     for (const [path, pathItem] of Object.entries(paths)) {
       for (const [method, operation] of Object.entries(pathItem as Record<string, any>)) {
-        if ((SUPPORTED_HTTP_METHODS as readonly string[]).includes(method.toUpperCase())) {
+        if ((OPENAPI_OPERATION_METHODS as readonly string[]).includes(method.toLowerCase())) {
           const tool = this._createTool(path, method, operation, baseUrl);
           if (tool) {
             tools.push(tool);
