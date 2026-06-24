@@ -157,6 +157,52 @@ describe('OpenApiConverter examples', () => {
     expect(tool.outputs.examples).toEqual([{ id: 'w_1' }]);
   });
 
+  test('preserves array-form (JSON Schema / OAS 3.1) schema examples', () => {
+    const spec = {
+      openapi: '3.1.0',
+      info: { title: 'Test API', version: '1.0.0' },
+      paths: {
+        '/gadgets': {
+          post: {
+            operationId: 'createGadget',
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: { name: { type: 'string' } },
+                    // JSON Schema 'examples' keyword: an array of values
+                    examples: [{ name: 'Gadget A' }, { name: 'Gadget B' }],
+                  },
+                },
+              },
+            },
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'string',
+                      examples: ['ok', 'done'],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const manual = new OpenApiConverter(spec).convert();
+    const tool = manual.tools.find(t => t.name === 'createGadget')!;
+
+    const body = tool.inputs.properties!.body;
+    expect(body.examples).toEqual([{ name: 'Gadget A' }, { name: 'Gadget B' }]);
+    expect(tool.outputs.examples).toEqual(['ok', 'done']);
+  });
+
   test('skips operations with unsupported HTTP methods', () => {
     const spec = {
       openapi: '3.0.0',

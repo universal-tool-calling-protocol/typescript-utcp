@@ -276,9 +276,15 @@ export class OpenApiConverter {
   /**
    * Extracts examples from an OpenAPI Parameter, Media Type, or Schema object.
    *
-   * Supports both `example` (single value) and `examples` (map of Example
-   * Objects). Returns a list of example values suitable for the JSON Schema
-   * `examples` keyword, or undefined when none are present.
+   * Handles all three shapes the spec allows:
+   *   - `example` (single value) — OpenAPI Parameter / Media Type / 3.0 Schema.
+   *   - `examples` as a map of named Example Objects — OpenAPI Parameter /
+   *     Media Type Object (each entry carries an inline `value`).
+   *   - `examples` as an array of literal values — JSON Schema / OpenAPI 3.1
+   *     Schema Object.
+   *
+   * Returns a list of example values suitable for the JSON Schema `examples`
+   * keyword, or undefined when none are present.
    */
   private _extractExamples(obj: Record<string, any> | undefined | null): JsonType[] | undefined {
     if (!obj || typeof obj !== 'object') {
@@ -292,18 +298,25 @@ export class OpenApiConverter {
       examples.push(obj.example);
     }
 
-    // Handle 'examples' map (OpenAPI 3.0+ Example Objects keyed by name)
-    if ('examples' in obj && obj.examples && typeof obj.examples === 'object' && !Array.isArray(obj.examples)) {
-      for (let exampleObj of Object.values(obj.examples) as any[]) {
-        if (exampleObj && typeof exampleObj === 'object' && '$ref' in exampleObj) {
-          exampleObj = this._resolveSchema(exampleObj) ?? {};
+    if ('examples' in obj && obj.examples) {
+      if (Array.isArray(obj.examples)) {
+        // JSON Schema / OpenAPI 3.1 Schema form: a plain array of example values.
+        for (const ex of obj.examples) {
+          examples.push(ex);
         }
-        if (exampleObj && typeof exampleObj === 'object') {
-          // Example Object can have 'value' or 'externalValue'
-          if ('value' in exampleObj) {
-            examples.push(exampleObj.value);
+      } else if (typeof obj.examples === 'object') {
+        // OpenAPI 3.0 form: a map of named Example Objects.
+        for (let exampleObj of Object.values(obj.examples) as any[]) {
+          if (exampleObj && typeof exampleObj === 'object' && '$ref' in exampleObj) {
+            exampleObj = this._resolveSchema(exampleObj) ?? {};
           }
-          // Note: externalValue is a URI reference, we skip it as it's not inline
+          if (exampleObj && typeof exampleObj === 'object') {
+            // Example Object can have 'value' or 'externalValue'
+            if ('value' in exampleObj) {
+              examples.push(exampleObj.value);
+            }
+            // Note: externalValue is a URI reference, we skip it as it's not inline
+          }
         }
       }
     }
