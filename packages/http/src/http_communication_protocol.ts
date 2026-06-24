@@ -247,12 +247,18 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     }
     const status = error.response.status;
     const data = error.response.data;
+    // Prefer a string `error` / `message` / `detail` field from the body; some
+    // APIs nest an OBJECT there (e.g. { error: { code, reason } }), so only use
+    // the candidate when it's actually a string — otherwise fall through to the
+    // full JSON so the real structure shows instead of "[object Object]".
+    const stringField = (...candidates: unknown[]): string | undefined =>
+      candidates.find((c): c is string => typeof c === 'string');
     const detail =
       typeof data === 'string'
         ? data
         : data == null
           ? error.message
-          : (data.error ?? data.message ?? data.detail ?? JSON.stringify(data));
+          : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
     const normalized = new Error(
       `HTTP ${status} calling tool '${toolName}': ${detail}`,
     ) as Error & { status: number; data: unknown };

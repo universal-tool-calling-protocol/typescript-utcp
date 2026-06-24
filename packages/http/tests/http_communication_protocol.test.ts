@@ -78,6 +78,12 @@ beforeAll(async () => {
     res.status(403).send("discovery refused: tenant is not provisioned for streaming");
   });
 
+  // Some APIs nest an OBJECT under `error` — the message must show its JSON,
+  // not "[object Object]".
+  app.post("/forbidden-object", (req, res) => {
+    res.status(422).json({ error: { code: "INVALID_FIELD", reason: "value out of range" } });
+  });
+
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => {
       serverPort = (server.address() as any).port;
@@ -230,6 +236,31 @@ describe("HttpCommunicationProtocol", () => {
       const roundTripped = JSON.parse(JSON.stringify(thrown));
       expect(roundTripped.status).toBe(403);
       expect(roundTripped.data).toEqual({ error: "You are not allowed to do that, and here is exactly why." });
+    });
+
+    test("should JSON-stringify an object-valued error field, not '[object Object]'", async () => {
+      const callTemplate: HttpCallTemplate = {
+        name: "forbidden_object_server",
+        call_template_type: "http",
+        url: `http://localhost:${serverPort}/forbidden-object`,
+        http_method: "POST",
+      };
+
+      let thrown: any;
+      try {
+        await protocol.callTool(mockClient, "test.forbidden_object", {}, callTemplate);
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown.message).not.toContain("[object Object]");
+      // The structured detail survives in the message...
+      expect(thrown.message).toContain("INVALID_FIELD");
+      expect(thrown.message).toContain("value out of range");
+      // ...and the raw object is preserved on `data`.
+      expect(thrown.status).toBe(422);
+      expect(thrown.data).toEqual({ error: { code: "INVALID_FIELD", reason: "value out of range" } });
     });
   });
 });
