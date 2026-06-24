@@ -62,6 +62,12 @@ beforeAll(async () => {
     res.status(500).json({ error: "Internal Server Error" });
   });
 
+  // Returns a non-2xx with a descriptive JSON body, like a real API does when it
+  // refuses a call. Used to prove callTool surfaces that body, not just the status.
+  app.post("/forbidden", (req, res) => {
+    res.status(403).json({ error: "You are not allowed to do that, and here is exactly why." });
+  });
+
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => {
       serverPort = (server.address() as any).port;
@@ -187,6 +193,33 @@ describe("HttpCommunicationProtocol", () => {
       };
       const result = await protocol.callTool(mockClient, "test.tool", {}, callTemplate);
       expect(result.result).toBe("success");
+    });
+
+    test("should surface the server's error body, not just the status code", async () => {
+      const callTemplate: HttpCallTemplate = {
+        name: "forbidden_server",
+        call_template_type: "http",
+        url: `http://localhost:${serverPort}/forbidden`,
+        http_method: "POST",
+      };
+
+      let thrown: any;
+      try {
+        await protocol.callTool(mockClient, "test.forbidden", {}, callTemplate);
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      // The reason the server sent (not just "status code 403") must be present.
+      expect(thrown.message).toContain("You are not allowed to do that, and here is exactly why.");
+      expect(thrown.message).toContain("403");
+      // Enumerable status/data survive structured serialization out of a sandbox.
+      expect(thrown.status).toBe(403);
+      expect(thrown.data).toEqual({ error: "You are not allowed to do that, and here is exactly why." });
+      const roundTripped = JSON.parse(JSON.stringify(thrown));
+      expect(roundTripped.status).toBe(403);
+      expect(roundTripped.data).toEqual({ error: "You are not allowed to do that, and here is exactly why." });
     });
   });
 });
