@@ -6,7 +6,7 @@
 // merged (not leaked raw), and operations with unsupported HTTP methods are
 // skipped rather than producing invalid tools.
 
-import { test, expect, describe } from 'bun:test';
+import { test, expect, describe, spyOn } from 'bun:test';
 // Import the package index first so its register() side effect runs before the
 // converter validates the generated HttpCallTemplate.
 import '@utcp/http';
@@ -171,8 +171,20 @@ describe('OpenApiConverter examples', () => {
       },
     };
 
-    const manual = new OpenApiConverter(spec).convert();
-    const names = manual.tools.map(t => t.name).sort();
-    expect(names).toEqual(['listThings']);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const manual = new OpenApiConverter(spec).convert();
+      const names = manual.tools.map(t => t.name).sort();
+      expect(names).toEqual(['listThings']);
+
+      // Unsupported operations must reach _createTool and emit a skip warning,
+      // not be silently dropped by the loop filter.
+      const warnings = warn.mock.calls.map(c => String(c[0])).join('\n');
+      expect(warnings).toContain('optionsThings');
+      expect(warnings).toContain('headThings');
+      expect(warnings).toContain('traceThings');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
