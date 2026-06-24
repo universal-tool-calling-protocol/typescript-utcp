@@ -3,7 +3,12 @@ import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import express, { Express } from 'express';
 import { Server } from 'http';
 // Import from package index to trigger auto-registration
-import { HttpCommunicationProtocol, HttpCallTemplate } from "@utcp/http";
+import {
+  HttpCommunicationProtocol,
+  HttpCallTemplate,
+  StreamableHttpCommunicationProtocol,
+  SseCommunicationProtocol,
+} from "@utcp/http";
 import { ApiKeyAuth, BasicAuth, OAuth2Auth } from "@utcp/sdk";
 import { IUtcpClient } from "@utcp/sdk";
 
@@ -60,6 +65,23 @@ beforeAll(async () => {
 
   app.get("/error", (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
+  });
+
+  // Returns a non-2xx with a descriptive JSON body, like a real API does when it
+  // refuses a call. Used to prove callTool surfaces that body, not just the status.
+  app.post("/forbidden", (req, res) => {
+    res.status(403).json({ error: "You are not allowed to do that, and here is exactly why." });
+  });
+
+  // GET variant for the streamable/sse discovery (registerManual) error-body test.
+  app.get("/forbidden-discovery", (req, res) => {
+    res.status(403).send("discovery refused: tenant is not provisioned for streaming");
+  });
+
+  // Some APIs nest an OBJECT under `error` — the message must show its JSON,
+  // not "[object Object]".
+  app.post("/forbidden-object", (req, res) => {
+    res.status(422).json({ error: { code: "INVALID_FIELD", reason: "value out of range" } });
   });
 
   await new Promise<void>((resolve) => {
@@ -188,5 +210,91 @@ describe("HttpCommunicationProtocol", () => {
       const result = await protocol.callTool(mockClient, "test.tool", {}, callTemplate);
       expect(result.result).toBe("success");
     });
+
+    test("should surface the server's error body, not just the status code", async () => {
+      const callTemplate: HttpCallTemplate = {
+        name: "forbidden_server",
+        call_template_type: "http",
+        url: `http://localhost:${serverPort}/forbidden`,
+        http_method: "POST",
+      };
+
+      let thrown: any;
+      try {
+        await protocol.callTool(mockClient, "test.forbidden", {}, callTemplate);
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      // The reason the server sent (not just "status code 403") must be present.
+      expect(thrown.message).toContain("You are not allowed to do that, and here is exactly why.");
+      expect(thrown.message).toContain("403");
+      // Enumerable status/data survive structured serialization out of a sandbox.
+      expect(thrown.status).toBe(403);
+      expect(thrown.data).toEqual({ error: "You are not allowed to do that, and here is exactly why." });
+      const roundTripped = JSON.parse(JSON.stringify(thrown));
+      expect(roundTripped.status).toBe(403);
+      expect(roundTripped.data).toEqual({ error: "You are not allowed to do that, and here is exactly why." });
+    });
+
+    test("should JSON-stringify an object-valued error field, not '[object Object]'", async () => {
+      const callTemplate: HttpCallTemplate = {
+        name: "forbidden_object_server",
+        call_template_type: "http",
+        url: `http://localhost:${serverPort}/forbidden-object`,
+        http_method: "POST",
+      };
+
+      let thrown: any;
+      try {
+        await protocol.callTool(mockClient, "test.forbidden_object", {}, callTemplate);
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown.message).not.toContain("[object Object]");
+      // The structured detail survives in the message...
+      expect(thrown.message).toContain("INVALID_FIELD");
+      expect(thrown.message).toContain("value out of range");
+      // ...and the raw object is preserved on `data`.
+      expect(thrown.status).toBe(422);
+      expect(thrown.data).toEqual({ error: { code: "INVALID_FIELD", reason: "value out of range" } });
+    });
+  });
+});
+
+// The streamable/sse protocols' callTool paths are stubs; the only real fetch
+// that can fail with a body is in registerManual (discovery). These prove that
+// failure surfaces the server's body, not just "HTTP 403: Forbidden".
+describe("discovery error body (streamable_http + sse)", () => {
+  test("StreamableHttpCommunicationProtocol.registerManual surfaces the server body", async () => {
+    const protocol = new StreamableHttpCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "forbidden_stream",
+      call_template_type: "streamable_http",
+      url: `http://localhost:${serverPort}/forbidden-discovery`,
+      http_method: "GET",
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
+    expect(result.errors[0]).toContain("403");
+  });
+
+  test("SseCommunicationProtocol.registerManual surfaces the server body", async () => {
+    const protocol = new SseCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "forbidden_sse",
+      call_template_type: "sse",
+      url: `http://localhost:${serverPort}/forbidden-discovery`,
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
+    expect(result.errors[0]).toContain("403");
   });
 });

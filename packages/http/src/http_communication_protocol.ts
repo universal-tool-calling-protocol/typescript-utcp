@@ -222,8 +222,50 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
       return response.data;
     } catch (error: any) {
       this._logError(`Error calling HTTP tool '${toolName}':`, error);
-      throw error;
+      throw this._normalizeToolError(toolName, error);
     }
+  }
+
+  /**
+   * Turn a raw axios error into one that actually carries the server's response.
+   *
+   * On a non-2xx, axios throws an `AxiosError` whose `.message` is the generic
+   * `"Request failed with status code 403"` — the response BODY (where servers
+   * put the real reason, e.g. `{ "error": "..." }`) sits on `error.response.data`
+   * and is otherwise lost to every caller that only reads `.message`. That body
+   * is also dropped entirely when the error is serialized across a boundary
+   * (e.g. JSON.stringify in an isolated-vm tool runner), because `Error.message`
+   * is non-enumerable and `AxiosError` doesn't serialize its `response`.
+   *
+   * This folds the status + body into the message AND attaches enumerable
+   * `status` / `data` fields, so the reason survives both `.message` readers and
+   * structured serialization. Non-HTTP errors (network, timeout) pass through.
+   */
+  private _normalizeToolError(toolName: string, error: any): Error {
+    if (!axios.isAxiosError(error) || !error.response) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+    const status = error.response.status;
+    const data = error.response.data;
+    // Prefer a string `error` / `message` / `detail` field from the body; some
+    // APIs nest an OBJECT there (e.g. { error: { code, reason } }), so only use
+    // the candidate when it's actually a string — otherwise fall through to the
+    // full JSON so the real structure shows instead of "[object Object]".
+    const stringField = (...candidates: unknown[]): string | undefined =>
+      candidates.find((c): c is string => typeof c === 'string');
+    const detail =
+      typeof data === 'string'
+        ? data
+        : data == null
+          ? error.message
+          : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
+    const normalized = new Error(
+      `HTTP ${status} calling tool '${toolName}': ${detail}`,
+    ) as Error & { status: number; data: unknown };
+    // Enumerable so they survive JSON.stringify out of an isolated-vm runner.
+    normalized.status = status;
+    normalized.data = data;
+    return normalized;
   }
 
   /**
