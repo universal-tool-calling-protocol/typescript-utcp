@@ -325,6 +325,41 @@ export class OpenApiConverter {
   }
 
   /**
+   * Whether a value is representable as JSON (and therefore as a valid JsonType
+   * once it reaches JsonSchemaSchema.parse). Non-finite numbers (NaN/Infinity)
+   * and `undefined` are not, and would otherwise make the zod parse throw and
+   * abort the entire conversion. Such example values are dropped instead.
+   */
+  private _isJsonSafe(value: any): boolean {
+    if (value === undefined) return false;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (Array.isArray(value)) return value.every(v => this._isJsonSafe(v));
+    if (value !== null && typeof value === 'object') {
+      return Object.values(value).every(v => this._isJsonSafe(v));
+    }
+    return true; // string, boolean, null, finite number
+  }
+
+  /**
+   * Order-insensitive, type-aware canonical key for de-duplicating example
+   * values: object keys are sorted recursively before serialization, so
+   * `{a:1,b:2}` and `{b:2,a:1}` collapse, while `true`/`1` stay distinct.
+   */
+  private _exampleKey(value: JsonType): string {
+    const canon = (v: any): any => {
+      if (Array.isArray(v)) return v.map(canon);
+      if (v !== null && typeof v === 'object') {
+        return Object.keys(v).sort().reduce((acc: Record<string, any>, k) => {
+          acc[k] = canon(v[k]);
+          return acc;
+        }, {});
+      }
+      return v;
+    };
+    return JSON.stringify(canon(value));
+  }
+
+  /**
    * Collects and de-duplicates examples from several OpenAPI objects, preserving order.
    *
    * Used to combine examples that can appear at more than one level for the
@@ -332,12 +367,17 @@ export class OpenApiConverter {
    */
   private _mergeExamples(...objs: Array<Record<string, any> | undefined | null>): JsonType[] | undefined {
     const merged: JsonType[] = [];
+    const seen = new Set<string>();
     for (const obj of objs) {
       const extracted = this._extractExamples(obj);
       if (!extracted) continue;
       for (const ex of extracted) {
-        const key = JSON.stringify(ex);
-        if (!merged.some(m => JSON.stringify(m) === key)) {
+        // Drop values that aren't valid JSON so a single bad example can't make
+        // JsonSchemaSchema.parse throw and abort the whole conversion.
+        if (!this._isJsonSafe(ex)) continue;
+        const key = this._exampleKey(ex);
+        if (!seen.has(key)) {
+          seen.add(key);
           merged.push(ex);
         }
       }
