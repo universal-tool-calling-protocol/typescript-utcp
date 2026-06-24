@@ -285,6 +285,39 @@ describe('OpenApiConverter examples', () => {
     expect(tool.inputs.properties!.body.examples).toEqual([1.5]);
   });
 
+  test('non-JSON primitive examples (bigint/symbol) are dropped, not crash', () => {
+    const spec = {
+      openapi: '3.1.0',
+      info: { title: 'Test API', version: '1.0.0' },
+      paths: {
+        '/p': {
+          post: {
+            operationId: 'p',
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    // bigint would even throw inside JSON.stringify during de-dup;
+                    // symbol is not JSON either. Both must be dropped.
+                    examples: [10n as unknown as never, Symbol('x') as unknown as never, { ok: true }],
+                  },
+                },
+              },
+            },
+            responses: { '200': { description: 'ok' } },
+          },
+        },
+      },
+    };
+
+    let manual!: ReturnType<OpenApiConverter['convert']>;
+    expect(() => { manual = new OpenApiConverter(spec).convert(); }).not.toThrow();
+    const tool = manual.tools.find(t => t.name === 'p')!;
+    expect(tool).toBeDefined();
+    expect(tool.inputs.properties!.body.examples).toEqual([{ ok: true }]);
+  });
+
   test('skips operations with unsupported HTTP methods', () => {
     const spec = {
       openapi: '3.0.0',

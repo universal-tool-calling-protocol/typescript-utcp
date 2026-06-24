@@ -331,13 +331,21 @@ export class OpenApiConverter {
    * abort the entire conversion. Such example values are dropped instead.
    */
   private _isJsonSafe(value: any): boolean {
-    if (value === undefined) return false;
-    if (typeof value === 'number') return Number.isFinite(value);
+    if (value === null) return true;
     if (Array.isArray(value)) return value.every(v => this._isJsonSafe(v));
-    if (value !== null && typeof value === 'object') {
-      return Object.values(value).every(v => this._isJsonSafe(v));
+    switch (typeof value) {
+      case 'string':
+      case 'boolean':
+        return true;
+      case 'number':
+        return Number.isFinite(value); // reject NaN / Infinity
+      case 'object':
+        return Object.values(value).every(v => this._isJsonSafe(v));
+      default:
+        // undefined, bigint, symbol, function: not representable as JSON.
+        // (bigint would even throw inside JSON.stringify during de-dup.)
+        return false;
     }
-    return true; // string, boolean, null, finite number
   }
 
   /**
