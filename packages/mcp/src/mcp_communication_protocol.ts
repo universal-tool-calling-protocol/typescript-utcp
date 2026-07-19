@@ -140,8 +140,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
         return schema as JsonSchema;
       }
       
-      // Dereference the schema (inlines all $refs and $defs)
-      const dereferenced = await $RefParser.dereference(schema as any);
+      // Dereference the schema (inlines all $refs and $defs). `circular:
+      // 'ignore'` keeps recursive schemas (e.g. self-referencing filter
+      // grammars) from throwing — the cycle is left as a live reference
+      // instead of failing the whole tool discovery.
+      const dereferenced = await $RefParser.dereference(schema as any, {
+        dereference: { circular: 'ignore' },
+      });
       return dereferenced as JsonSchema;
     } catch (error: any) {
       // If dereferencing fails, log a warning and return the original schema
@@ -194,6 +199,12 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
         args: stdioConfig.args || [],
         cwd: stdioConfig.cwd,
         env: combinedEnv,
+        // Default the child's stderr to 'ignore' so a chatty MCP server does
+        // not flood the host terminal during discovery. NOT 'pipe': with no
+        // reader attached the OS pipe buffer fills and a verbose child
+        // deadlocks. Set UTCP_MCP_CHILD_STDERR=inherit to see child stderr
+        // when debugging.
+        stderr: process.env.UTCP_MCP_CHILD_STDERR === 'inherit' ? 'inherit' : 'ignore',
       });
 
     } else if (serverConfig.transport === 'http') {
@@ -409,6 +420,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     if (result && typeof result === 'object') {
       if ('structured_output' in result) {
         return result.structured_output;
+      }
+      // MCP servers may return only `structuredContent` (spec field) with an
+      // empty `content` array — without this fallback such results collapse
+      // to [] and the payload is silently lost.
+      const hasContent = Array.isArray(result.content) && result.content.length > 0;
+      if (!hasContent && result.structuredContent != null) {
+        return result.structuredContent;
       }
       if (Array.isArray(result.content)) {
         const processedList = result.content.map((item: any) => {
