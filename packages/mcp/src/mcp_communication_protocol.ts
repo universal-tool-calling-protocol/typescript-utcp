@@ -225,17 +225,18 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
       const transportOptions: StreamableHTTPClientTransportOptions = {
         requestInit: { headers: { ...(httpConfig.headers || {}), ...authHeader } },
-        // No SSE reconnection by default (`sse_reconnect_max_retries: 0`).
-        // The SDK maintains a standalone GET stream for server-initiated
-        // notifications and RESETS its retry counter whenever a stream
-        // closes gracefully — hosted MCP servers close idle streams every
-        // few seconds, so under the SDK defaults every cached session
+        // No notification-stream reconnection by default
+        // (`notification_stream_max_retries: 0`). The Streamable HTTP
+        // transport maintains a standalone GET stream (SSE-encoded) for
+        // server-initiated notifications and RESETS its retry counter
+        // whenever a stream closes gracefully — hosted servers close idle
+        // streams every few seconds, so under the SDK defaults every cached session
         // reconnects forever, and each attempt's fetch parks an abort
         // listener on the transport-lifetime signal until GC
         // (MaxListenersExceededWarning; issue #35). The delay values are
         // the SDK's own defaults — only the retry cap is configurable.
         reconnectionOptions: {
-          maxRetries: httpConfig.sse_reconnect_max_retries ?? 0,
+          maxRetries: httpConfig.notification_stream_max_retries ?? 0,
           initialReconnectionDelay: 1000,
           reconnectionDelayGrowFactor: 1.5,
           maxReconnectionDelay: 30000,

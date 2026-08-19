@@ -144,24 +144,24 @@ afterAll(async () => {
 });
 
 describe("McpHttpServer SSE reconnection config", () => {
-  test("defaults sse_reconnect_max_retries to 0 — no notification-stream reconnect churn", () => {
+  test("defaults notification_stream_max_retries to 0 — no notification-stream reconnect churn", () => {
     const parsed = McpHttpServerSchema.parse({ transport: "http", url: "https://example.com/mcp" });
-    expect(parsed.sse_reconnect_max_retries).toBe(0);
+    expect(parsed.notification_stream_max_retries).toBe(0);
   });
 
   test("accepts an explicit retry cap for servers whose notifications are consumed", () => {
     const parsed = McpHttpServerSchema.parse({
       transport: "http",
       url: "https://example.com/mcp",
-      sse_reconnect_max_retries: 3,
+      notification_stream_max_retries: 3,
     });
-    expect(parsed.sse_reconnect_max_retries).toBe(3);
+    expect(parsed.notification_stream_max_retries).toBe(3);
   });
 
   test("rejects negative and fractional retry caps", () => {
     for (const bad of [-1, 1.5]) {
       expect(() =>
-        McpHttpServerSchema.parse({ transport: "http", url: "https://example.com/mcp", sse_reconnect_max_retries: bad }),
+        McpHttpServerSchema.parse({ transport: "http", url: "https://example.com/mcp", notification_stream_max_retries: bad }),
       ).toThrow();
     }
   });

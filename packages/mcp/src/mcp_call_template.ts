@@ -49,7 +49,7 @@ export interface McpHttpServer {
   timeout: number;
   sse_read_timeout: number;
   terminate_on_close: boolean;
-  sse_reconnect_max_retries: number;
+  notification_stream_max_retries: number;
 }
 
 /**
@@ -62,13 +62,14 @@ export const McpHttpServerSchema: z.ZodType<McpHttpServer> = z.object({
   timeout: z.number().optional().default(30).describe('Timeout for HTTP requests in seconds.'),
   sse_read_timeout: z.number().optional().default(300).describe('Read timeout for SSE connections in seconds (e.g., for `streamable-http` MCP servers).'),
   terminate_on_close: z.boolean().optional().default(true).describe('Whether to terminate the HTTP connection on client close.'),
-  sse_reconnect_max_retries: z.number().int().min(0).optional().default(0).describe(
-    'How many times the transport may reconnect a dropped SSE stream. Defaults to 0 (no ' +
-    'reconnection): UTCP tool calls are strictly request/response, and the MCP SDK resets its ' +
-    'retry counter whenever a stream closes GRACEFULLY — hosted servers close idle notification ' +
-    'streams every few seconds, so any nonzero value makes a long-lived cached session reconnect ' +
-    'forever, leaking an abort listener per attempt (issue #35). Raise this only for servers ' +
-    'whose server-initiated notifications you actually consume.',
+  notification_stream_max_retries: z.number().int().min(0).optional().default(0).describe(
+    'How many times the Streamable HTTP transport may reconnect its standalone GET notification ' +
+    'stream (the SSE-encoded channel for server-initiated messages) after it drops. Defaults to ' +
+    '0 (no reconnection): UTCP tool calls are strictly request/response, and the MCP SDK resets ' +
+    'its retry counter whenever a stream closes GRACEFULLY — hosted servers close idle ' +
+    'notification streams every few seconds, so any nonzero value makes a long-lived cached ' +
+    'session reconnect forever, leaking an abort listener per attempt (issue #35). Raise this ' +
+    'only for servers whose server-initiated notifications you actually consume.',
   ),
 }) as z.ZodType<McpHttpServer>;
 
