@@ -266,6 +266,28 @@ describe("McpCommunicationProtocol", () => {
         ).rejects.toThrow("Invalid MCP tool name format: 'nonexistent_tool'. Expected 'manualName.serverName.toolName'.");
     }, 10000);
 
+    test("rejects an invalid notification_stream_max_retries at the transport boundary", async () => {
+      // Server entries travel as `z.any()` inside McpConfigSchema, so the
+      // per-field validation must fire where the transport is built — this
+      // exercises that path end to end, not the schema in isolation.
+      const badTemplate: McpCallTemplate = {
+        name: "bad_retry_manual",
+        call_template_type: "mcp",
+        config: {
+          mcpServers: {
+            bad_server: {
+              transport: 'http',
+              url: `http://localhost:${HTTP_PORT}/mcp`,
+              notification_stream_max_retries: -1,
+            }
+          }
+        }
+      };
+      const result = await protocol.registerManual(mockClient, badTemplate);
+      expect(result.success).toBe(false);
+      expect(result.errors.join(" ")).toContain("notification_stream_max_retries");
+    }, 10000);
+
     test("should throw an error if server name from tool is not in config", async () => {
         await expect(
             protocol.callTool(mockClient, "unknown_server.some_tool", {}, callTemplate)

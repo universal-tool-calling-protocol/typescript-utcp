@@ -74,7 +74,7 @@ function ensureSecureMcpUrl(rawUrl: string, context: string): void {
       `internal services.`,
   );
 }
-import { McpCallTemplateSchema, McpHttpServer, McpServerConfig, McpStdioServer } from './mcp_call_template';
+import { McpCallTemplateSchema, McpHttpServer, McpHttpServerSchema, McpServerConfig, McpStdioServer } from './mcp_call_template';
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import $RefParser from '@apidevtools/json-schema-ref-parser';
 
@@ -197,7 +197,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       });
 
     } else if (serverConfig.transport === 'http') {
-      const httpConfig = serverConfig as McpHttpServer;
+      // PARSE, not cast: server entries travel as `z.any()` inside
+      // McpConfigSchema (official-MCP-config compatibility), so this is the
+      // one point where the per-field schema actually applies — defaults
+      // (notification_stream_max_retries: 0 among them) take effect and the
+      // documented rejections (negative/fractional retry caps) really reject
+      // instead of flowing into the transport.
+      const httpConfig: McpHttpServer = McpHttpServerSchema.parse(serverConfig);
       // Reject plain-HTTP non-loopback URLs and obvious SSRF targets
       // before any connection attempt. Matches the trust boundary
       // @utcp/http enforces for its own discovery / invocation URLs.
@@ -236,7 +242,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
         // (MaxListenersExceededWarning; issue #35). The delay values are
         // the SDK's own defaults — only the retry cap is configurable.
         reconnectionOptions: {
-          maxRetries: httpConfig.notification_stream_max_retries ?? 0,
+          maxRetries: httpConfig.notification_stream_max_retries,
           initialReconnectionDelay: 1000,
           reconnectionDelayGrowFactor: 1.5,
           maxReconnectionDelay: 30000,
