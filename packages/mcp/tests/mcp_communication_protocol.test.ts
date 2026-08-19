@@ -3,6 +3,7 @@ import { test, expect, beforeAll, afterAll, describe } from "bun:test";
 import { Subprocess } from "bun";
 import path from "path";
 import { McpCommunicationProtocol, McpCallTemplate } from "../src/index";
+import { McpHttpServerSchema } from "../src/mcp_call_template";
 import { IUtcpClient } from "@utcp/sdk";
 
 const HTTP_PORT = 9999;
@@ -140,6 +141,30 @@ afterAll(async () => {
   // Extra safety: wait a bit for ports to be released
   await new Promise(resolve => setTimeout(resolve, 300));
   console.log("Mock servers stopped.");
+});
+
+describe("McpHttpServer SSE reconnection config", () => {
+  test("defaults sse_reconnect_max_retries to 0 — no notification-stream reconnect churn", () => {
+    const parsed = McpHttpServerSchema.parse({ transport: "http", url: "https://example.com/mcp" });
+    expect(parsed.sse_reconnect_max_retries).toBe(0);
+  });
+
+  test("accepts an explicit retry cap for servers whose notifications are consumed", () => {
+    const parsed = McpHttpServerSchema.parse({
+      transport: "http",
+      url: "https://example.com/mcp",
+      sse_reconnect_max_retries: 3,
+    });
+    expect(parsed.sse_reconnect_max_retries).toBe(3);
+  });
+
+  test("rejects negative and fractional retry caps", () => {
+    for (const bad of [-1, 1.5]) {
+      expect(() =>
+        McpHttpServerSchema.parse({ transport: "http", url: "https://example.com/mcp", sse_reconnect_max_retries: bad }),
+      ).toThrow();
+    }
+  });
 });
 
 describe("McpCommunicationProtocol", () => {
