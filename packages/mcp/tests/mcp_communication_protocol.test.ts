@@ -381,6 +381,66 @@ describe("McpCommunicationProtocol", () => {
       expect(client.closed).toBe(1);
       expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
     });
+
+    test("an auth failure dressed in connection vocabulary is not retried", async () => {
+      // Transports wrap auth rejections in transport language ("connection
+      // closed: 401") — the transient markers must not outrank the auth
+      // markers, or the dead credential gets a pointless immediate retry.
+      const protocol = new McpCommunicationProtocol();
+      let calls = 0;
+      const client = seed(protocol, () => {
+        calls += 1;
+        return Promise.reject(new Error("Connection closed: 401 Unauthorized"));
+      });
+
+      await expect(run(protocol, client)).rejects.toThrow("401");
+      expect(calls).toBe(1); // no retry
+      expect(client.closed).toBe(1);
+      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+    });
+
+    test("the SDK's request-level timeout (-32001) evicts the wedged session", async () => {
+      // We forward the same budget to the SDK, so its race usually fires
+      // before ours — its error must classify the same way ours does.
+      const protocol = new McpCommunicationProtocol();
+      const client = seed(protocol, () =>
+        Promise.reject(new Error("MCP error -32001: Request timed out")));
+
+      await expect(run(protocol, client)).rejects.toThrow("-32001");
+      expect(client.closed).toBe(1);
+      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+    });
+
+    test("eviction closes the session that failed, never a concurrent caller's replacement", async () => {
+      const protocol = new McpCommunicationProtocol();
+      const replacement = { closed: 0, close() { this.closed += 1; return Promise.resolve(); } };
+      const client = seed(protocol, () => {
+        // A concurrent caller replaced the cached session before our catch ran.
+        (protocol as any)._mcpSessions.set(KEY, replacement);
+        return Promise.reject(new Error("HTTP 401 Unauthorized"));
+      });
+
+      await expect(run(protocol, client)).rejects.toThrow("401");
+      expect(client.closed).toBe(1); // the failed session is closed
+      expect(replacement.closed).toBe(0); // the replacement is untouched
+      expect((protocol as any)._mcpSessions.get(KEY)).toBe(replacement); // and stays cached
+    });
+
+    test("an auth failure drops the cached OAuth token so the next dial fetches fresh", async () => {
+      // The token cache trusts expires_in, but a token can be revoked before
+      // its local expiry — evicting only the session would resend the same
+      // rejected token on every redial until the TTL ran out.
+      const protocol = new McpCommunicationProtocol();
+      (protocol as any)._oauthTokens.set("cid", { accessToken: "revoked", expiresAt: Date.now() + 3600_000 });
+      const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
+      const client = seed(protocol, () =>
+        Promise.reject(new Error("HTTP 401 Unauthorized")));
+
+      await expect(
+        (protocol as any)._withSession("s", CONFIG, auth, () => client.op())
+      ).rejects.toThrow("401");
+      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+    });
   });
 
   describe("Timeout forwarding", () => {

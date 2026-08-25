@@ -150,17 +150,47 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     }
   }
 
-  private async _cleanupSession(sessionKey: string): Promise<void> {
-    const session = this._mcpSessions.get(sessionKey);
-    if (session) {
-      try {
-        await session.close();
-        this._logInfo(`Closed MCP session for '${sessionKey}'.`);
-      } catch (e: any) {
-        this._logError(`Error closing session for '${sessionKey}':`, e.message);
-      } finally {
-        this._mcpSessions.delete(sessionKey);
-      }
+  /**
+   * Close a session and drop it from the cache — identity-aware. Pass
+   * `expected` (the client the caller actually saw fail) so a concurrent
+   * caller's replacement session is never closed by mistake: if the cache no
+   * longer holds `expected`, only `expected` itself is closed and the cached
+   * entry is left alone.
+   *
+   * The cache delete happens BEFORE the `await close()`, not after it: with
+   * the delete in a `finally`, a concurrent `_getOrCreateSession` landing
+   * during the close would have its freshly cached session deleted out from
+   * under it.
+   */
+  private async _cleanupSession(sessionKey: string, expected?: McpClient): Promise<void> {
+    const cached = this._mcpSessions.get(sessionKey);
+    const target = expected ?? cached;
+    if (!target) return;
+    if (cached === target) {
+      this._mcpSessions.delete(sessionKey);
+    }
+    try {
+      await target.close();
+      this._logInfo(`Closed MCP session for '${sessionKey}'.`);
+    } catch (e: any) {
+      this._logError(`Error closing session for '${sessionKey}':`, e.message);
+    }
+  }
+
+  /**
+   * Drop a cached client-credentials OAuth token after the server rejected
+   * it. The cache trusts `expires_in`, but a token can be revoked server-side
+   * before its local expiry — without this, every post-eviction redial would
+   * resend the same rejected token until the TTL ran out, so evicting the
+   * session alone would fix nothing. `oauth2_user` tokens are provisioned
+   * out-of-band and never cached here, so there is nothing to invalidate for
+   * them.
+   */
+  private _invalidateOAuthToken(auth: Auth | undefined): void {
+    if (!auth || auth.auth_type === 'oauth2_user') return;
+    const clientId = (auth as OAuth2Auth).client_id;
+    if (clientId && this._oauthTokens.delete(clientId)) {
+      this._logInfo(`Dropped cached OAuth token for client '${clientId}' after an auth rejection.`);
     }
   }
 
@@ -277,45 +307,54 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
   /**
    * Classify an operation failure by what it says about the CACHED SESSION,
-   * which is the thing `_withSession` is responsible for. Three answers:
+   * which is the thing `_withSession` is responsible for. Four answers:
    *
    *   - `'transient'` — the transport broke in a way a fresh dial has a real
    *     chance of fixing right now (connection dropped, reset, stale
    *     handshake). Evict and retry once.
-   *   - `'broken'` — the session is dead weight, but an immediate redial
-   *     would almost certainly fail the same way: auth rejections (an
-   *     expired or revoked credential does not heal by reconnecting with
-   *     itself), and our own operation timeout (the session is wedged, and
-   *     closing its transport is also what aborts the still-in-flight
-   *     request). Evict, don't retry.
+   *   - `'auth'` — the server rejected the credential. Evict without
+   *     retrying (a rejected credential does not heal by redialing with
+   *     itself), and drop any cached OAuth token so the NEXT call fetches a
+   *     fresh one instead of resending the rejected token until its local
+   *     TTL runs out.
+   *   - `'timeout'` — ours or the SDK's request-level timeout. The session
+   *     is wedged with the request possibly still in flight; evict without
+   *     retrying — closing the transport is also what aborts that request.
    *   - `null` — the error is about the OPERATION, not the session (a
    *     JSON-RPC tool error such as invalid params). The session is healthy;
    *     keep it.
    *
-   * The `'broken'` class is what issue #34 was about: an auth failure never
+   * The auth class is what issue #34 was about: an auth failure never
    * matched the old transient allowlist, so the dead transport stayed cached
    * forever and every reuse parked one more abort listener on its
    * transport-lifetime signal — unbounded listener growth on a session that
    * could never succeed again.
    */
-  private _classifySessionError(err: unknown): 'transient' | 'broken' | null {
+  private _classifySessionError(err: unknown): 'transient' | 'auth' | 'timeout' | null {
     const msg = String((err as any)?.message ?? err).toLowerCase();
+    // Auth-class rejections — checked FIRST: transports often wrap an auth
+    // failure in connection vocabulary ("connection closed: 401
+    // Unauthorized"), and letting the transient markers win would retry a
+    // credential that cannot succeed. Matched loosely on purpose: transports
+    // stringify these differently ("Error POSTing to endpoint (HTTP 401)",
+    // "SSE error: 403 Forbidden", plain "Unauthorized"). A false positive
+    // costs one eviction and redial; a false negative resurrects issue #34.
+    if (/\b(?:http[ _-]?)?40[13]\b|unauthorized|forbidden|authentication|authorization|invalid[ _-]?token/.test(msg)) {
+      return 'auth';
+    }
+    // Timeouts that leave the session suspect with the request possibly
+    // still in flight: our own race ("timed out after Ns") and the MCP SDK's
+    // request-level timeout (McpError -32001, "Request timed out") — the SDK
+    // race usually fires first since we forward the same budget to it.
+    // Neither pattern matches the network-level 'etimedout' (no space),
+    // which stays transient below.
+    if (msg.includes('timed out') || msg.includes('-32001')) {
+      return 'timeout';
+    }
     if (msg.includes('closed') || msg.includes('disconnected') ||
         msg.includes('econnreset') || msg.includes('etimedout') ||
         msg.includes('already initialized')) {
       return 'transient';
-    }
-    // Auth-class rejections. Matched loosely on purpose: transports stringify
-    // these differently ("Error POSTing to endpoint (HTTP 401)", "SSE error:
-    // 403 Forbidden", plain "Unauthorized"). A false positive costs one
-    // eviction and redial; a false negative resurrects issue #34.
-    if (/\b(?:http[ _-]?)?40[13]\b|unauthorized|forbidden|authentication|authorization|invalid[ _-]?token/.test(msg)) {
-      return 'broken';
-    }
-    // Our own race timeout (distinct from the network-level 'etimedout'
-    // above). The operation may still be in flight against the session.
-    if (msg.includes('timed out after')) {
-      return 'broken';
     }
     return null;
   }
@@ -352,8 +391,12 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   ): Promise<T> {
     const sessionKey = `${serverName}:${serverConfig.transport}`;
     const timeoutMs = this._getTimeoutMs(serverConfig);
+    // Hoisted so the catch arms can hand the SPECIFIC client that failed to
+    // `_cleanupSession` — a key-only eviction would close whatever a
+    // concurrent caller has cached under the key by then.
+    let client: McpClient | undefined;
     try {
-      const client = await this._getOrCreateSession(serverName, serverConfig, auth);
+      client = await this._getOrCreateSession(serverName, serverConfig, auth);
       return await this._runWithTimeout(sessionKey, timeoutMs, client, operation);
     } catch (e: any) {
       this._logError(`MCP operation on '${sessionKey}' failed:`, e.message);
@@ -361,25 +404,36 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       const classification = this._classifySessionError(e);
       if (classification === 'transient') {
         this._logInfo(`Connection/initialization error detected on '${sessionKey}'. Cleaning up and retrying once...`);
-        await this._cleanupSession(sessionKey);
+        // `client` undefined means session CREATION failed — nothing of ours
+        // was cached, and a key-only cleanup here could close a concurrent
+        // caller's healthy session. Same guard on the arms below.
+        if (client) await this._cleanupSession(sessionKey, client);
+        let newClient: McpClient | undefined;
         try {
-          const newClient = await this._getOrCreateSession(serverName, serverConfig, auth);
+          newClient = await this._getOrCreateSession(serverName, serverConfig, auth);
           return await this._runWithTimeout(sessionKey, timeoutMs, newClient, operation);
         } catch (retryErr: any) {
           // The fresh session can be just as dead as the one it replaced
           // (server still down, credential still bad). Whatever the retry
           // cached must not outlive a session-class failure — leaving it is
           // exactly the accumulation vector of issue #34.
-          if (this._classifySessionError(retryErr) !== null) {
+          const retryClassification = this._classifySessionError(retryErr);
+          if (retryClassification !== null) {
             this._logInfo(`Retry on '${sessionKey}' failed with a session-class error. Evicting the retry's session.`);
-            await this._cleanupSession(sessionKey);
+            if (newClient) await this._cleanupSession(sessionKey, newClient);
+          }
+          if (retryClassification === 'auth') {
+            this._invalidateOAuthToken(auth);
           }
           throw retryErr;
         }
       }
-      if (classification === 'broken') {
+      if (classification === 'auth' || classification === 'timeout') {
         this._logInfo(`Session-fatal error on '${sessionKey}' (auth failure or operation timeout). Evicting so the next call dials fresh instead of reusing a dead transport.`);
-        await this._cleanupSession(sessionKey);
+        if (client) await this._cleanupSession(sessionKey, client);
+        if (classification === 'auth') {
+          this._invalidateOAuthToken(auth);
+        }
       }
 
       throw e;
