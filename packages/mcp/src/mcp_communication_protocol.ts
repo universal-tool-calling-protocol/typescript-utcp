@@ -105,8 +105,23 @@ function isMcpToolsResponse(data: unknown): data is { tools: McpToolResponse[] }
  */
 export class McpCommunicationProtocol implements CommunicationProtocol {
   private _oauthTokens: Map<string, { accessToken: string; expiresAt: number }> = new Map();
+  /**
+   * Per-client invalidation counter. A token fetch captures the generation
+   * when it starts and only caches its result if nothing invalidated the
+   * client in the meantime — otherwise an in-flight fetch that began before
+   * a 401 would repopulate the cache right after `_invalidateOAuthToken`
+   * cleared it.
+   */
+  private _oauthGenerations: Map<string, number> = new Map();
   private _axiosInstance: AxiosInstance;
   private _mcpSessions: Map<string, McpClient> = new Map();
+  /**
+   * Set at the start of `close()` and never cleared: the protocol is
+   * terminal once closed. Session creation checks it twice — before dialing
+   * and again after `connect()` resolves — so a call racing shutdown can
+   * neither start a new session nor land one that outlives `close()`.
+   */
+  private _closed = false;
 
   constructor() {
     this._axiosInstance = axios.create({ timeout: 30000 });
@@ -189,9 +204,17 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   private _invalidateOAuthToken(auth: Auth | undefined): void {
     if (!auth || auth.auth_type === 'oauth2_user') return;
     const clientId = (auth as OAuth2Auth).client_id;
-    if (clientId && this._oauthTokens.delete(clientId)) {
+    if (!clientId) return;
+    // Bump the generation whether or not a token was cached: a fetch may be
+    // in flight right now, and it must not cache what it brings back.
+    this._oauthGenerations.set(clientId, this._oauthGeneration(clientId) + 1);
+    if (this._oauthTokens.delete(clientId)) {
       this._logInfo(`Dropped cached OAuth token for client '${clientId}' after an auth rejection.`);
     }
+  }
+
+  private _oauthGeneration(clientId: string): number {
+    return this._oauthGenerations.get(clientId) ?? 0;
   }
 
   private async _getOrCreateSession(
@@ -206,6 +229,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       const existingSession = this._mcpSessions.get(sessionKey)!;
       this._logInfo(`Reusing existing MCP session for '${sessionKey}'.`);
       return existingSession;
+    }
+
+    // Worded without the transient markers ("closed", "disconnected") on
+    // purpose, so `_withSession` does not classify shutdown as a transport
+    // hiccup and spend a retry on it.
+    if (this._closed) {
+      throw new Error(`McpCommunicationProtocol has been shut down; refusing to create a session for '${sessionKey}'.`);
     }
 
     this._logInfo(`Creating new MCP session for '${sessionKey}'...`);
@@ -287,6 +317,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     const mcpClient = new McpClient({ name: `utcp-mcp-client-${sessionKey}`, version: '1.0.1' });
     try {
       await mcpClient.connect(transport);
+      if (this._closed) {
+        // `close()` began while we were connecting. Its sweep snapshotted the
+        // cache before this session existed, so caching it now would leave a
+        // live transport behind after shutdown returned.
+        await mcpClient.close().catch(() => {});
+        throw new Error(`McpCommunicationProtocol was shut down while connecting '${sessionKey}'.`);
+      }
       this._mcpSessions.set(sessionKey, mcpClient);
     } catch (e: any) {
       // If connection fails, don't cache the broken client
@@ -554,6 +591,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
   public async close(): Promise<void> {
     this._logInfo("Closing all active MCP sessions.");
+    this._closed = true;
     const cleanupPromises = Array.from(this._mcpSessions.keys()).map(key => this._cleanupSession(key));
     await Promise.all(cleanupPromises);
     this._oauthTokens.clear();
@@ -598,8 +636,14 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     }
 
     this._logInfo(`Fetching new OAuth2 token for client: '${clientId}'`);
+    const generation = this._oauthGeneration(clientId);
 
     try {
+      // Only the WINNER of the race caches — previously each variant wrote
+      // the cache on its own success, so the slower one landed later and
+      // overwrote whatever was there, including an invalidation that
+      // happened in between. And even the winner only caches if nothing
+      // invalidated this client while the fetch was in flight.
       const token = await Promise.any([
         (async () => {
           const bodyData = new URLSearchParams({
@@ -609,8 +653,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
           const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
           if (!response.data.access_token) throw new Error("Access token not found in response.");
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
-          this._oauthTokens.set(clientId, { accessToken: response.data.access_token, expiresAt });
-          return response.data.access_token;
+          return { accessToken: response.data.access_token as string, expiresAt };
         })(),
         (async () => {
           const bodyData = new URLSearchParams({ 'grant_type': 'client_credentials', 'scope': authDetails.scope || '' });
@@ -620,11 +663,15 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
           });
           if (!response.data.access_token) throw new Error("Access token not found in response.");
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
-          this._oauthTokens.set(clientId, { accessToken: response.data.access_token, expiresAt });
-          return response.data.access_token;
+          return { accessToken: response.data.access_token as string, expiresAt };
         })()
       ]);
-      return token;
+      if (this._oauthGeneration(clientId) === generation) {
+        this._oauthTokens.set(clientId, token);
+      } else {
+        this._logInfo(`OAuth token for client '${clientId}' was invalidated while a fetch was in flight; not caching the stale result.`);
+      }
+      return token.accessToken;
     } catch (aggregateError: any) {
       const errorMessages = aggregateError.errors?.map((e: Error) => e.message).join('; ') || String(aggregateError);
       throw new Error(`Failed to fetch OAuth2 token for client '${clientId}': ${errorMessages}`);

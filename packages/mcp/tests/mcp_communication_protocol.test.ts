@@ -5,6 +5,7 @@ import path from "path";
 import { McpCommunicationProtocol, McpCallTemplate } from "../src/index";
 import { McpHttpServerSchema } from "../src/mcp_call_template";
 import { IUtcpClient } from "@utcp/sdk";
+import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
 
 const HTTP_PORT = 9999;
 let stdioServerProcess: Subprocess | null = null;
@@ -260,6 +261,7 @@ describe("McpCommunicationProtocol", () => {
       expect(result).toBe(25);
     }, 10000);
     
+
     test("should throw an error if tool name is not namespaced correctly", async () => {
         await expect(
             protocol.callTool(mockClient, "nonexistent_tool", {}, callTemplate)
@@ -440,6 +442,81 @@ describe("McpCommunicationProtocol", () => {
         (protocol as any)._withSession("s", CONFIG, auth, () => client.op())
       ).rejects.toThrow("401");
       expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+    });
+
+    test("a slower token-fetch variant cannot repopulate the cache after invalidation", async () => {
+      // _handleOAuth2 races two request shapes with Promise.any. Each used to
+      // write the cache on its own success, so the loser landed later and
+      // overwrote whatever was there — including an invalidation.
+      const protocol = new McpCommunicationProtocol();
+      let resolveSlow!: (v: any) => void;
+      const slow = new Promise<any>((res) => { resolveSlow = res; });
+      let n = 0;
+      (protocol as any)._axiosInstance = {
+        post: () => (++n === 1
+          ? Promise.resolve({ data: { access_token: "fast", expires_in: 3600 } })
+          : slow),
+      };
+      const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
+
+      await expect((protocol as any)._handleOAuth2(auth)).resolves.toBe("fast");
+      expect((protocol as any)._oauthTokens.get("cid")?.accessToken).toBe("fast");
+
+      (protocol as any)._invalidateOAuthToken(auth);
+      resolveSlow({ data: { access_token: "slow", expires_in: 3600 } });
+      await slow;
+      await new Promise((r) => setTimeout(r, 0));
+      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+    });
+
+    test("a fetch already in flight when the token is invalidated does not cache its result", async () => {
+      const protocol = new McpCommunicationProtocol();
+      let resolveFetch!: (v: any) => void;
+      const pending = new Promise<any>((res) => { resolveFetch = res; });
+      (protocol as any)._axiosInstance = { post: () => pending };
+      const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
+
+      const fetching = (protocol as any)._handleOAuth2(auth);
+      (protocol as any)._invalidateOAuthToken(auth); // lands mid-flight
+      resolveFetch({ data: { access_token: "stale", expires_in: 3600 } });
+
+      // The in-flight attempt still gets its token — only the CACHE is guarded.
+      await expect(fetching).resolves.toBe("stale");
+      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+    });
+
+    test("a session whose connect resolves after close() began is closed, not cached", async () => {
+      // close() snapshots the cache before an in-flight connect has landed.
+      // Without the post-connect check that session would be cached AFTER
+      // the sweep and outlive shutdown with a live transport. The SDK
+      // client's connect is held open with a deferred so the window is
+      // deterministic (and no real server is dialed).
+      const originalConnect = McpSdkClient.prototype.connect;
+      let releaseConnect!: () => void;
+      const connectGate = new Promise<void>((res) => { releaseConnect = res; });
+      let closedClients = 0;
+      const originalClose = McpSdkClient.prototype.close;
+      McpSdkClient.prototype.connect = function () { return connectGate; } as any;
+      McpSdkClient.prototype.close = async function () { closedClients += 1; } as any;
+      try {
+        const protocol = new McpCommunicationProtocol();
+        const creating = (protocol as any)._getOrCreateSession("late", CONFIG);
+        await protocol.close(); // begins while connect is in flight
+        releaseConnect();
+        await expect(creating).rejects.toThrow("shut down");
+        expect(closedClients).toBe(1); // the late session was closed, not leaked
+        expect((protocol as any)._mcpSessions.size).toBe(0);
+      } finally {
+        McpSdkClient.prototype.connect = originalConnect;
+        McpSdkClient.prototype.close = originalClose;
+      }
+    });
+
+    test("refuses to create a session after close()", async () => {
+      const protocol = new McpCommunicationProtocol();
+      await protocol.close();
+      await expect((protocol as any)._getOrCreateSession("s", CONFIG)).rejects.toThrow("shut down");
+      expect((protocol as any)._mcpSessions.size).toBe(0);
     });
   });
 
