@@ -275,6 +275,75 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     return (serverConfig.timeout ?? 30) * 1000;
   }
 
+  /**
+   * Classify an operation failure by what it says about the CACHED SESSION,
+   * which is the thing `_withSession` is responsible for. Three answers:
+   *
+   *   - `'transient'` — the transport broke in a way a fresh dial has a real
+   *     chance of fixing right now (connection dropped, reset, stale
+   *     handshake). Evict and retry once.
+   *   - `'broken'` — the session is dead weight, but an immediate redial
+   *     would almost certainly fail the same way: auth rejections (an
+   *     expired or revoked credential does not heal by reconnecting with
+   *     itself), and our own operation timeout (the session is wedged, and
+   *     closing its transport is also what aborts the still-in-flight
+   *     request). Evict, don't retry.
+   *   - `null` — the error is about the OPERATION, not the session (a
+   *     JSON-RPC tool error such as invalid params). The session is healthy;
+   *     keep it.
+   *
+   * The `'broken'` class is what issue #34 was about: an auth failure never
+   * matched the old transient allowlist, so the dead transport stayed cached
+   * forever and every reuse parked one more abort listener on its
+   * transport-lifetime signal — unbounded listener growth on a session that
+   * could never succeed again.
+   */
+  private _classifySessionError(err: unknown): 'transient' | 'broken' | null {
+    const msg = String((err as any)?.message ?? err).toLowerCase();
+    if (msg.includes('closed') || msg.includes('disconnected') ||
+        msg.includes('econnreset') || msg.includes('etimedout') ||
+        msg.includes('already initialized')) {
+      return 'transient';
+    }
+    // Auth-class rejections. Matched loosely on purpose: transports stringify
+    // these differently ("Error POSTing to endpoint (HTTP 401)", "SSE error:
+    // 403 Forbidden", plain "Unauthorized"). A false positive costs one
+    // eviction and redial; a false negative resurrects issue #34.
+    if (/\b(?:http[ _-]?)?40[13]\b|unauthorized|forbidden|authentication|authorization|invalid[ _-]?token/.test(msg)) {
+      return 'broken';
+    }
+    // Our own race timeout (distinct from the network-level 'etimedout'
+    // above). The operation may still be in flight against the session.
+    if (msg.includes('timed out after')) {
+      return 'broken';
+    }
+    return null;
+  }
+
+  /**
+   * Run `operation` bounded by the session's timeout. The timer is cleared
+   * whichever side wins — the old inline race left a live timer behind for
+   * the full timeout window on every successful call.
+   */
+  private async _runWithTimeout<T>(
+    sessionKey: string,
+    timeoutMs: number,
+    client: McpClient,
+    operation: (client: McpClient) => Promise<T>
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation(client),
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after ${timeoutMs / 1000}s.`)), timeoutMs);
+        })
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   private async _withSession<T>(
     serverName: string,
     serverConfig: McpServerConfig,
@@ -285,22 +354,32 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     const timeoutMs = this._getTimeoutMs(serverConfig);
     try {
       const client = await this._getOrCreateSession(serverName, serverConfig, auth);
-      return await Promise.race([
-        operation(client),
-        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after ${timeoutMs / 1000}s.`)), timeoutMs))
-      ]);
+      return await this._runWithTimeout(sessionKey, timeoutMs, client, operation);
     } catch (e: any) {
       this._logError(`MCP operation on '${sessionKey}' failed:`, e.message);
 
-      const errorMsg = String((e as any)?.message ?? e).toLowerCase();
-      // Check for connection errors or "already initialized" errors
-      if (errorMsg.includes('closed') || errorMsg.includes('disconnected') ||
-          errorMsg.includes('econnreset') || errorMsg.includes('etimedout') ||
-          errorMsg.includes('already initialized')) {
+      const classification = this._classifySessionError(e);
+      if (classification === 'transient') {
         this._logInfo(`Connection/initialization error detected on '${sessionKey}'. Cleaning up and retrying once...`);
         await this._cleanupSession(sessionKey);
-        const newClient = await this._getOrCreateSession(serverName, serverConfig, auth);
-        return await Promise.race([operation(newClient), new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after ${timeoutMs / 1000}s.`)), timeoutMs))]);
+        try {
+          const newClient = await this._getOrCreateSession(serverName, serverConfig, auth);
+          return await this._runWithTimeout(sessionKey, timeoutMs, newClient, operation);
+        } catch (retryErr: any) {
+          // The fresh session can be just as dead as the one it replaced
+          // (server still down, credential still bad). Whatever the retry
+          // cached must not outlive a session-class failure — leaving it is
+          // exactly the accumulation vector of issue #34.
+          if (this._classifySessionError(retryErr) !== null) {
+            this._logInfo(`Retry on '${sessionKey}' failed with a session-class error. Evicting the retry's session.`);
+            await this._cleanupSession(sessionKey);
+          }
+          throw retryErr;
+        }
+      }
+      if (classification === 'broken') {
+        this._logInfo(`Session-fatal error on '${sessionKey}' (auth failure or operation timeout). Evicting so the next call dials fresh instead of reusing a dead transport.`);
+        await this._cleanupSession(sessionKey);
       }
 
       throw e;

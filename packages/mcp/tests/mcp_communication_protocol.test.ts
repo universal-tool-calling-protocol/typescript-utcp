@@ -295,6 +295,94 @@ describe("McpCommunicationProtocol", () => {
     }, 10000);
   });
 
+  describe("Session eviction on session-class failures (issue #34)", () => {
+    const CONFIG = { transport: "stdio" as const, command: "true", timeout: 60 };
+    const KEY = "s:stdio";
+
+    /** A fake cached session whose close() we can observe, wired into the
+     * protocol's private session map the way _getOrCreateSession would. */
+    function seed(protocol: McpCommunicationProtocol, behavior: (calls: number) => Promise<any>) {
+      let calls = 0;
+      const client = {
+        closed: 0,
+        close() { this.closed += 1; return Promise.resolve(); },
+        op: () => behavior((calls += 1)),
+      };
+      (protocol as any)._mcpSessions.set(KEY, client);
+      (protocol as any)._getOrCreateSession = () => {
+        (protocol as any)._mcpSessions.set(KEY, client);
+        return Promise.resolve(client);
+      };
+      return client;
+    }
+
+    function run(protocol: McpCommunicationProtocol, client: any) {
+      return (protocol as any)._withSession("s", CONFIG, undefined, () => client.op());
+    }
+
+    test("an auth failure evicts the dead session instead of caching it forever", async () => {
+      // The heart of #34: a 401 never matched the transient allowlist, so the
+      // dead transport was reused (and accumulated abort listeners) on every
+      // subsequent call, forever.
+      const protocol = new McpCommunicationProtocol();
+      const client = seed(protocol, () =>
+        Promise.reject(new Error("Error POSTing to endpoint (HTTP 401): Unauthorized")));
+
+      await expect(run(protocol, client)).rejects.toThrow("401");
+      expect(client.closed).toBe(1);
+      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+    });
+
+    test("a tool-level JSON-RPC error keeps the healthy session cached", async () => {
+      // Evicting on every error would tear down and re-dial per bad tool
+      // call — the session is fine, the arguments were not.
+      const protocol = new McpCommunicationProtocol();
+      const client = seed(protocol, () =>
+        Promise.reject(new Error("MCP error -32602: Invalid params")));
+
+      await expect(run(protocol, client)).rejects.toThrow("-32602");
+      expect(client.closed).toBe(0);
+      expect((protocol as any)._mcpSessions.get(KEY)).toBe(client);
+    });
+
+    test("a transient connection error still evicts and retries once", async () => {
+      const protocol = new McpCommunicationProtocol();
+      const client = seed(protocol, (calls) =>
+        calls === 1 ? Promise.reject(new Error("Connection closed")) : Promise.resolve("ok"));
+
+      await expect(run(protocol, client)).resolves.toBe("ok");
+      expect(client.closed).toBe(1); // the broken first session was closed
+    });
+
+    test("a retry that fails with a session-class error does not leave its session cached", async () => {
+      // Server is down for good: first attempt transient, retry hits auth.
+      // Pre-fix the retry path had no catch at all, so its dead session
+      // stayed cached — the same accumulation #34 reported, one hop later.
+      const protocol = new McpCommunicationProtocol();
+      const client = seed(protocol, (calls) =>
+        Promise.reject(calls === 1 ? new Error("Connection closed") : new Error("403 Forbidden")));
+
+      await expect(run(protocol, client)).rejects.toThrow("403");
+      expect(client.closed).toBe(2);
+      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+    });
+
+    test("an operation timeout evicts the wedged session", async () => {
+      // Closing the transport is also what aborts the still-in-flight
+      // request, releasing its abort listener — the raced timeout branch
+      // #34 asked to see released.
+      const protocol = new McpCommunicationProtocol();
+      const client = seed(protocol, () => new Promise(() => {}));
+      const config = { ...CONFIG, timeout: 1 }; // 1s
+
+      await expect(
+        (protocol as any)._withSession("s", config, undefined, () => client.op())
+      ).rejects.toThrow("timed out");
+      expect(client.closed).toBe(1);
+      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+    });
+  });
+
   describe("Timeout forwarding", () => {
     test("forwards configured timeout to listTools and callTool", async () => {
       const capturedOpts: any[] = [];
