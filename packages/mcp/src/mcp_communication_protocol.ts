@@ -1,7 +1,8 @@
 // packages/mcp/src/mcp_communication_protocol.ts
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
+import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport, StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StreamableHTTPClientTransport, StreamableHTTPClientTransportOptions, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import axios, { AxiosInstance } from 'axios';
 import { CommunicationProtocol } from '@utcp/sdk';
 import { RegisterManualResult } from '@utcp/sdk';
@@ -116,12 +117,23 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   private _axiosInstance: AxiosInstance;
   private _mcpSessions: Map<string, McpClient> = new Map();
   /**
-   * Set at the start of `close()` and never cleared: the protocol is
-   * terminal once closed. Session creation checks it twice — before dialing
-   * and again after `connect()` resolves — so a call racing shutdown can
-   * neither start a new session nor land one that outlives `close()`.
+   * `close()` is a DRAIN, not a terminal state. This instance is registered
+   * once at module load (`index.ts`) into the process-wide
+   * `CommunicationProtocol.communicationProtocols` registry, and EVERY
+   * `UtcpClient` shares it — `UtcpClient.close()` closes the registered
+   * protocols, so one client closing must not brick MCP for every other
+   * client in the process (which is exactly what a sticky closed flag did).
+   *
+   * `_closing` is true only while a close's sweep runs — session creation
+   * refuses during that window. `_closeGeneration` increments at each
+   * close: creation captures it on entry and re-checks it before dialing
+   * (a close can land during the OAuth token fetch) and again after
+   * `connect()` resolves (the sweep snapshots the cache before an in-flight
+   * connect has landed, so a session caching itself afterwards would
+   * otherwise outlive the close with a live transport).
    */
-  private _closed = false;
+  private _closing = false;
+  private _closeGeneration = 0;
 
   constructor() {
     this._axiosInstance = axios.create({ timeout: 30000 });
@@ -234,9 +246,10 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     // Worded without the transient markers ("closed", "disconnected") on
     // purpose, so `_withSession` does not classify shutdown as a transport
     // hiccup and spend a retry on it.
-    if (this._closed) {
-      throw new Error(`McpCommunicationProtocol has been shut down; refusing to create a session for '${sessionKey}'.`);
+    if (this._closing) {
+      throw new Error(`McpCommunicationProtocol is shutting down; refusing to create a session for '${sessionKey}'.`);
     }
+    const closeGenerationAtStart = this._closeGeneration;
 
     this._logInfo(`Creating new MCP session for '${sessionKey}'...`);
     let transport: Transport;
@@ -314,13 +327,19 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       throw new Error(`Unsupported MCP transport: '${(serverConfig as any).transport}'`);
     }
 
+    // A close() that began during the async work above (the OAuth token
+    // fetch is an await) must abort BEFORE a connection is dialed at all.
+    if (this._closing || this._closeGeneration !== closeGenerationAtStart) {
+      throw new Error(`McpCommunicationProtocol was shut down while connecting '${sessionKey}'.`);
+    }
+
     const mcpClient = new McpClient({ name: `utcp-mcp-client-${sessionKey}`, version: '1.0.1' });
     try {
       await mcpClient.connect(transport);
-      if (this._closed) {
-        // `close()` began while we were connecting. Its sweep snapshotted the
-        // cache before this session existed, so caching it now would leave a
-        // live transport behind after shutdown returned.
+      if (this._closing || this._closeGeneration !== closeGenerationAtStart) {
+        // A close() intervened while we were connecting. Its sweep
+        // snapshotted the cache before this session existed, so caching it
+        // now would leave a live transport behind after that close returned.
         await mcpClient.close().catch(() => {});
         throw new Error(`McpCommunicationProtocol was shut down while connecting '${sessionKey}'.`);
       }
@@ -368,6 +387,22 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
    * could never succeed again.
    */
   private _classifySessionError(err: unknown): 'transient' | 'auth' | 'timeout' | null {
+    // Structured metadata first; the message heuristics below are the
+    // fallback for errors that arrive wrapped or stringified (and for SDK
+    // copies that fail an instanceof across duplicated installs).
+    if (err instanceof McpError) {
+      // A JSON-RPC-level error means the session DELIVERED a well-formed
+      // response — the transport is alive, whatever the error text says.
+      // Without this gate, a tool error that merely mentions authorization
+      // ("Authorization header missing for downstream API") would evict a
+      // healthy session and throw away a valid OAuth token. The single
+      // exception is the SDK's own request-timeout code: the request never
+      // completed and the session is suspect.
+      return err.code === -32001 ? 'timeout' : null;
+    }
+    if (err instanceof StreamableHTTPError && (err.code === 401 || err.code === 403)) {
+      return 'auth';
+    }
     const msg = String((err as any)?.message ?? err).toLowerCase();
     // Auth-class rejections — checked FIRST: transports often wrap an auth
     // failure in connection vocabulary ("connection closed: 401
@@ -591,11 +626,19 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
   public async close(): Promise<void> {
     this._logInfo("Closing all active MCP sessions.");
-    this._closed = true;
-    const cleanupPromises = Array.from(this._mcpSessions.keys()).map(key => this._cleanupSession(key));
-    await Promise.all(cleanupPromises);
-    this._oauthTokens.clear();
-    this._logInfo("MCP Communication Protocol closed and all resources cleaned up.");
+    this._closing = true;
+    this._closeGeneration += 1;
+    try {
+      const cleanupPromises = Array.from(this._mcpSessions.keys()).map(key => this._cleanupSession(key));
+      await Promise.all(cleanupPromises);
+      this._oauthTokens.clear();
+    } finally {
+      // Drain complete — the shared registry instance stays usable. This
+      // instance serves every UtcpClient in the process (see the field
+      // docs), so staying closed would take MCP away from all of them.
+      this._closing = false;
+    }
+    this._logInfo("MCP Communication Protocol drained all sessions and cleaned up.");
   }
   
   private _processMcpToolResult(result: any): any {

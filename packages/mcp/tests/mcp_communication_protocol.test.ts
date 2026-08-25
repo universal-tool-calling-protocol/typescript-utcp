@@ -6,6 +6,8 @@ import { McpCommunicationProtocol, McpCallTemplate } from "../src/index";
 import { McpHttpServerSchema } from "../src/mcp_call_template";
 import { IUtcpClient } from "@utcp/sdk";
 import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { McpError } from "@modelcontextprotocol/sdk/types.js";
+import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const HTTP_PORT = 9999;
 let stdioServerProcess: Subprocess | null = null;
@@ -512,11 +514,96 @@ describe("McpCommunicationProtocol", () => {
       }
     });
 
-    test("refuses to create a session after close()", async () => {
+    test("close() drains sessions but the shared registry instance stays usable", async () => {
+      // index.ts registers ONE McpCommunicationProtocol into the process-wide
+      // registry, shared by every UtcpClient — and UtcpClient.close() closes
+      // the registered protocols. A terminal close therefore bricked MCP for
+      // every other client in the process the moment any one client closed.
+      const originalConnect = McpSdkClient.prototype.connect;
+      McpSdkClient.prototype.connect = function () { return Promise.resolve(); } as any;
+      try {
+        const protocol = new McpCommunicationProtocol();
+        const live = { closed: 0, close() { this.closed += 1; return Promise.resolve(); } };
+        (protocol as any)._mcpSessions.set(KEY, live);
+
+        await protocol.close();
+        expect(live.closed).toBe(1); // the drain really drained
+        expect((protocol as any)._mcpSessions.size).toBe(0);
+
+        // A NEW client's session creation must succeed after the drain.
+        const created = await (protocol as any)._getOrCreateSession("s", CONFIG);
+        expect(created).toBeDefined();
+        expect((protocol as any)._mcpSessions.size).toBe(1);
+      } finally {
+        McpSdkClient.prototype.connect = originalConnect;
+      }
+    });
+
+    test("a close() landing during the OAuth token fetch aborts before dialing", async () => {
+      // The pre-dial \_closing check runs before the token fetch, which is an
+      // await — a close() arriving inside it used to let the code dial a
+      // brand-new connection after close() had already returned.
+      const originalConnect = McpSdkClient.prototype.connect;
+      let connectCalls = 0;
+      McpSdkClient.prototype.connect = function () { connectCalls += 1; return Promise.resolve(); } as any;
+      try {
+        const protocol = new McpCommunicationProtocol();
+        let releaseToken!: (v: any) => void;
+        (protocol as any)._axiosInstance = {
+          post: () => new Promise((res) => { releaseToken = res; }),
+        };
+        const cfg = { transport: "http" as const, url: "https://example.com/mcp" };
+        const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://example.com/token" };
+
+        const creating = (protocol as any)._getOrCreateSession("late", cfg, auth);
+        await protocol.close(); // lands mid-token-fetch
+        releaseToken({ data: { access_token: "tok", expires_in: 3600 } });
+
+        await expect(creating).rejects.toThrow("shut down");
+        expect(connectCalls).toBe(0); // never dialed
+        expect((protocol as any)._mcpSessions.size).toBe(0);
+      } finally {
+        McpSdkClient.prototype.connect = originalConnect;
+      }
+    });
+
+    test("a structured JSON-RPC error mentioning authorization keeps the session AND the token", async () => {
+      // The substring heuristics alone would read this tool-level error as a
+      // transport auth failure — evicting a healthy session and discarding a
+      // valid OAuth token. An McpError is a well-formed response from a live
+      // session; only its -32001 timeout code says anything about health.
       const protocol = new McpCommunicationProtocol();
-      await protocol.close();
-      await expect((protocol as any)._getOrCreateSession("s", CONFIG)).rejects.toThrow("shut down");
-      expect((protocol as any)._mcpSessions.size).toBe(0);
+      (protocol as any)._oauthTokens.set("cid", { accessToken: "valid", expiresAt: Date.now() + 3600_000 });
+      const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
+      const client = seed(protocol, () =>
+        Promise.reject(new McpError(-32602, "Authorization header missing for downstream API")));
+
+      await expect(
+        (protocol as any)._withSession("s", CONFIG, auth, () => client.op())
+      ).rejects.toThrow("Authorization");
+      expect(client.closed).toBe(0);
+      expect((protocol as any)._mcpSessions.get(KEY)).toBe(client);
+      expect((protocol as any)._oauthTokens.has("cid")).toBe(true);
+    });
+
+    test("a structured HTTP 401 classifies as auth without relying on message text", async () => {
+      const protocol = new McpCommunicationProtocol();
+      const client = seed(protocol, () =>
+        Promise.reject(new StreamableHTTPError(401, "nope")));
+
+      await expect(run(protocol, client)).rejects.toThrow("nope");
+      expect(client.closed).toBe(1);
+      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+    });
+
+    test("a structured McpError -32001 still evicts as a timeout", async () => {
+      const protocol = new McpCommunicationProtocol();
+      const client = seed(protocol, () =>
+        Promise.reject(new McpError(-32001, "Request timed out")));
+
+      await expect(run(protocol, client)).rejects.toThrow("-32001");
+      expect(client.closed).toBe(1);
+      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
     });
   });
 
