@@ -105,8 +105,23 @@ function isMcpToolsResponse(data: unknown): data is { tools: McpToolResponse[] }
  */
 export class McpCommunicationProtocol implements CommunicationProtocol {
   private _oauthTokens: Map<string, { accessToken: string; expiresAt: number }> = new Map();
+  /**
+   * Per-client invalidation counter. A token fetch captures the generation
+   * when it starts and only caches its result if nothing invalidated the
+   * client in the meantime — otherwise an in-flight fetch that began before
+   * a 401 would repopulate the cache right after `_invalidateOAuthToken`
+   * cleared it.
+   */
+  private _oauthGenerations: Map<string, number> = new Map();
   private _axiosInstance: AxiosInstance;
   private _mcpSessions: Map<string, McpClient> = new Map();
+  /**
+   * Set at the start of `close()` and never cleared: the protocol is
+   * terminal once closed. Session creation checks it twice — before dialing
+   * and again after `connect()` resolves — so a call racing shutdown can
+   * neither start a new session nor land one that outlives `close()`.
+   */
+  private _closed = false;
 
   constructor() {
     this._axiosInstance = axios.create({ timeout: 30000 });
@@ -150,18 +165,56 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     }
   }
 
-  private async _cleanupSession(sessionKey: string): Promise<void> {
-    const session = this._mcpSessions.get(sessionKey);
-    if (session) {
-      try {
-        await session.close();
-        this._logInfo(`Closed MCP session for '${sessionKey}'.`);
-      } catch (e: any) {
-        this._logError(`Error closing session for '${sessionKey}':`, e.message);
-      } finally {
-        this._mcpSessions.delete(sessionKey);
-      }
+  /**
+   * Close a session and drop it from the cache — identity-aware. Pass
+   * `expected` (the client the caller actually saw fail) so a concurrent
+   * caller's replacement session is never closed by mistake: if the cache no
+   * longer holds `expected`, only `expected` itself is closed and the cached
+   * entry is left alone.
+   *
+   * The cache delete happens BEFORE the `await close()`, not after it: with
+   * the delete in a `finally`, a concurrent `_getOrCreateSession` landing
+   * during the close would have its freshly cached session deleted out from
+   * under it.
+   */
+  private async _cleanupSession(sessionKey: string, expected?: McpClient): Promise<void> {
+    const cached = this._mcpSessions.get(sessionKey);
+    const target = expected ?? cached;
+    if (!target) return;
+    if (cached === target) {
+      this._mcpSessions.delete(sessionKey);
     }
+    try {
+      await target.close();
+      this._logInfo(`Closed MCP session for '${sessionKey}'.`);
+    } catch (e: any) {
+      this._logError(`Error closing session for '${sessionKey}':`, e.message);
+    }
+  }
+
+  /**
+   * Drop a cached client-credentials OAuth token after the server rejected
+   * it. The cache trusts `expires_in`, but a token can be revoked server-side
+   * before its local expiry — without this, every post-eviction redial would
+   * resend the same rejected token until the TTL ran out, so evicting the
+   * session alone would fix nothing. `oauth2_user` tokens are provisioned
+   * out-of-band and never cached here, so there is nothing to invalidate for
+   * them.
+   */
+  private _invalidateOAuthToken(auth: Auth | undefined): void {
+    if (!auth || auth.auth_type === 'oauth2_user') return;
+    const clientId = (auth as OAuth2Auth).client_id;
+    if (!clientId) return;
+    // Bump the generation whether or not a token was cached: a fetch may be
+    // in flight right now, and it must not cache what it brings back.
+    this._oauthGenerations.set(clientId, this._oauthGeneration(clientId) + 1);
+    if (this._oauthTokens.delete(clientId)) {
+      this._logInfo(`Dropped cached OAuth token for client '${clientId}' after an auth rejection.`);
+    }
+  }
+
+  private _oauthGeneration(clientId: string): number {
+    return this._oauthGenerations.get(clientId) ?? 0;
   }
 
   private async _getOrCreateSession(
@@ -176,6 +229,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       const existingSession = this._mcpSessions.get(sessionKey)!;
       this._logInfo(`Reusing existing MCP session for '${sessionKey}'.`);
       return existingSession;
+    }
+
+    // Worded without the transient markers ("closed", "disconnected") on
+    // purpose, so `_withSession` does not classify shutdown as a transport
+    // hiccup and spend a retry on it.
+    if (this._closed) {
+      throw new Error(`McpCommunicationProtocol has been shut down; refusing to create a session for '${sessionKey}'.`);
     }
 
     this._logInfo(`Creating new MCP session for '${sessionKey}'...`);
@@ -257,6 +317,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     const mcpClient = new McpClient({ name: `utcp-mcp-client-${sessionKey}`, version: '1.0.1' });
     try {
       await mcpClient.connect(transport);
+      if (this._closed) {
+        // `close()` began while we were connecting. Its sweep snapshotted the
+        // cache before this session existed, so caching it now would leave a
+        // live transport behind after shutdown returned.
+        await mcpClient.close().catch(() => {});
+        throw new Error(`McpCommunicationProtocol was shut down while connecting '${sessionKey}'.`);
+      }
       this._mcpSessions.set(sessionKey, mcpClient);
     } catch (e: any) {
       // If connection fails, don't cache the broken client
@@ -275,6 +342,84 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     return (serverConfig.timeout ?? 30) * 1000;
   }
 
+  /**
+   * Classify an operation failure by what it says about the CACHED SESSION,
+   * which is the thing `_withSession` is responsible for. Four answers:
+   *
+   *   - `'transient'` — the transport broke in a way a fresh dial has a real
+   *     chance of fixing right now (connection dropped, reset, stale
+   *     handshake). Evict and retry once.
+   *   - `'auth'` — the server rejected the credential. Evict without
+   *     retrying (a rejected credential does not heal by redialing with
+   *     itself), and drop any cached OAuth token so the NEXT call fetches a
+   *     fresh one instead of resending the rejected token until its local
+   *     TTL runs out.
+   *   - `'timeout'` — ours or the SDK's request-level timeout. The session
+   *     is wedged with the request possibly still in flight; evict without
+   *     retrying — closing the transport is also what aborts that request.
+   *   - `null` — the error is about the OPERATION, not the session (a
+   *     JSON-RPC tool error such as invalid params). The session is healthy;
+   *     keep it.
+   *
+   * The auth class is what issue #34 was about: an auth failure never
+   * matched the old transient allowlist, so the dead transport stayed cached
+   * forever and every reuse parked one more abort listener on its
+   * transport-lifetime signal — unbounded listener growth on a session that
+   * could never succeed again.
+   */
+  private _classifySessionError(err: unknown): 'transient' | 'auth' | 'timeout' | null {
+    const msg = String((err as any)?.message ?? err).toLowerCase();
+    // Auth-class rejections — checked FIRST: transports often wrap an auth
+    // failure in connection vocabulary ("connection closed: 401
+    // Unauthorized"), and letting the transient markers win would retry a
+    // credential that cannot succeed. Matched loosely on purpose: transports
+    // stringify these differently ("Error POSTing to endpoint (HTTP 401)",
+    // "SSE error: 403 Forbidden", plain "Unauthorized"). A false positive
+    // costs one eviction and redial; a false negative resurrects issue #34.
+    if (/\b(?:http[ _-]?)?40[13]\b|unauthorized|forbidden|authentication|authorization|invalid[ _-]?token/.test(msg)) {
+      return 'auth';
+    }
+    // Timeouts that leave the session suspect with the request possibly
+    // still in flight: our own race ("timed out after Ns") and the MCP SDK's
+    // request-level timeout (McpError -32001, "Request timed out") — the SDK
+    // race usually fires first since we forward the same budget to it.
+    // Neither pattern matches the network-level 'etimedout' (no space),
+    // which stays transient below.
+    if (msg.includes('timed out') || msg.includes('-32001')) {
+      return 'timeout';
+    }
+    if (msg.includes('closed') || msg.includes('disconnected') ||
+        msg.includes('econnreset') || msg.includes('etimedout') ||
+        msg.includes('already initialized')) {
+      return 'transient';
+    }
+    return null;
+  }
+
+  /**
+   * Run `operation` bounded by the session's timeout. The timer is cleared
+   * whichever side wins — the old inline race left a live timer behind for
+   * the full timeout window on every successful call.
+   */
+  private async _runWithTimeout<T>(
+    sessionKey: string,
+    timeoutMs: number,
+    client: McpClient,
+    operation: (client: McpClient) => Promise<T>
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation(client),
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after ${timeoutMs / 1000}s.`)), timeoutMs);
+        })
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   private async _withSession<T>(
     serverName: string,
     serverConfig: McpServerConfig,
@@ -283,24 +428,49 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   ): Promise<T> {
     const sessionKey = `${serverName}:${serverConfig.transport}`;
     const timeoutMs = this._getTimeoutMs(serverConfig);
+    // Hoisted so the catch arms can hand the SPECIFIC client that failed to
+    // `_cleanupSession` — a key-only eviction would close whatever a
+    // concurrent caller has cached under the key by then.
+    let client: McpClient | undefined;
     try {
-      const client = await this._getOrCreateSession(serverName, serverConfig, auth);
-      return await Promise.race([
-        operation(client),
-        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after ${timeoutMs / 1000}s.`)), timeoutMs))
-      ]);
+      client = await this._getOrCreateSession(serverName, serverConfig, auth);
+      return await this._runWithTimeout(sessionKey, timeoutMs, client, operation);
     } catch (e: any) {
       this._logError(`MCP operation on '${sessionKey}' failed:`, e.message);
 
-      const errorMsg = String((e as any)?.message ?? e).toLowerCase();
-      // Check for connection errors or "already initialized" errors
-      if (errorMsg.includes('closed') || errorMsg.includes('disconnected') ||
-          errorMsg.includes('econnreset') || errorMsg.includes('etimedout') ||
-          errorMsg.includes('already initialized')) {
+      const classification = this._classifySessionError(e);
+      if (classification === 'transient') {
         this._logInfo(`Connection/initialization error detected on '${sessionKey}'. Cleaning up and retrying once...`);
-        await this._cleanupSession(sessionKey);
-        const newClient = await this._getOrCreateSession(serverName, serverConfig, auth);
-        return await Promise.race([operation(newClient), new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`MCP operation on '${sessionKey}' timed out after ${timeoutMs / 1000}s.`)), timeoutMs))]);
+        // `client` undefined means session CREATION failed — nothing of ours
+        // was cached, and a key-only cleanup here could close a concurrent
+        // caller's healthy session. Same guard on the arms below.
+        if (client) await this._cleanupSession(sessionKey, client);
+        let newClient: McpClient | undefined;
+        try {
+          newClient = await this._getOrCreateSession(serverName, serverConfig, auth);
+          return await this._runWithTimeout(sessionKey, timeoutMs, newClient, operation);
+        } catch (retryErr: any) {
+          // The fresh session can be just as dead as the one it replaced
+          // (server still down, credential still bad). Whatever the retry
+          // cached must not outlive a session-class failure — leaving it is
+          // exactly the accumulation vector of issue #34.
+          const retryClassification = this._classifySessionError(retryErr);
+          if (retryClassification !== null) {
+            this._logInfo(`Retry on '${sessionKey}' failed with a session-class error. Evicting the retry's session.`);
+            if (newClient) await this._cleanupSession(sessionKey, newClient);
+          }
+          if (retryClassification === 'auth') {
+            this._invalidateOAuthToken(auth);
+          }
+          throw retryErr;
+        }
+      }
+      if (classification === 'auth' || classification === 'timeout') {
+        this._logInfo(`Session-fatal error on '${sessionKey}' (auth failure or operation timeout). Evicting so the next call dials fresh instead of reusing a dead transport.`);
+        if (client) await this._cleanupSession(sessionKey, client);
+        if (classification === 'auth') {
+          this._invalidateOAuthToken(auth);
+        }
       }
 
       throw e;
@@ -421,6 +591,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
   public async close(): Promise<void> {
     this._logInfo("Closing all active MCP sessions.");
+    this._closed = true;
     const cleanupPromises = Array.from(this._mcpSessions.keys()).map(key => this._cleanupSession(key));
     await Promise.all(cleanupPromises);
     this._oauthTokens.clear();
@@ -465,8 +636,14 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     }
 
     this._logInfo(`Fetching new OAuth2 token for client: '${clientId}'`);
+    const generation = this._oauthGeneration(clientId);
 
     try {
+      // Only the WINNER of the race caches — previously each variant wrote
+      // the cache on its own success, so the slower one landed later and
+      // overwrote whatever was there, including an invalidation that
+      // happened in between. And even the winner only caches if nothing
+      // invalidated this client while the fetch was in flight.
       const token = await Promise.any([
         (async () => {
           const bodyData = new URLSearchParams({
@@ -476,8 +653,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
           const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
           if (!response.data.access_token) throw new Error("Access token not found in response.");
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
-          this._oauthTokens.set(clientId, { accessToken: response.data.access_token, expiresAt });
-          return response.data.access_token;
+          return { accessToken: response.data.access_token as string, expiresAt };
         })(),
         (async () => {
           const bodyData = new URLSearchParams({ 'grant_type': 'client_credentials', 'scope': authDetails.scope || '' });
@@ -487,11 +663,15 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
           });
           if (!response.data.access_token) throw new Error("Access token not found in response.");
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
-          this._oauthTokens.set(clientId, { accessToken: response.data.access_token, expiresAt });
-          return response.data.access_token;
+          return { accessToken: response.data.access_token as string, expiresAt };
         })()
       ]);
-      return token;
+      if (this._oauthGeneration(clientId) === generation) {
+        this._oauthTokens.set(clientId, token);
+      } else {
+        this._logInfo(`OAuth token for client '${clientId}' was invalidated while a fetch was in flight; not caching the stale result.`);
+      }
+      return token.accessToken;
     } catch (aggregateError: any) {
       const errorMessages = aggregateError.errors?.map((e: Error) => e.message).join('; ') || String(aggregateError);
       throw new Error(`Failed to fetch OAuth2 token for client '${clientId}': ${errorMessages}`);
