@@ -616,6 +616,26 @@ describe("McpCommunicationProtocol", () => {
       expect(client.closed).toBe(1); // the dropped session was evicted
     });
 
+    test("a SERVER-defined -32000 tool error keeps the healthy session — no eviction, no retry", async () => {
+      // JSON-RPC reserves -32000..-32099 for implementation-defined SERVER
+      // errors, so -32000 in a tool response is legal and arrives through a
+      // live session. Only the SDK's client-side ConnectionClosed (fixed
+      // message "Connection closed") means the transport dropped; a bare
+      // code check would evict a healthy session and burn a retry on every
+      // such call.
+      const protocol = new McpCommunicationProtocol();
+      let calls = 0;
+      const client = seed(protocol, () => {
+        calls += 1;
+        return Promise.reject(new McpError(-32000, "insufficient credits for this tool"));
+      });
+
+      await expect(run(protocol, client)).rejects.toThrow("insufficient credits");
+      expect(calls).toBe(1); // no retry
+      expect(client.closed).toBe(0);
+      expect((protocol as any)._mcpSessions.get(KEY)).toBe(client);
+    });
+
     test("overlapping close() calls keep the gate shut until the slowest sweep finishes", async () => {
       // A boolean gate is cleared by whichever close() finishes first — and a
       // second close() finds an already-emptied cache and finishes

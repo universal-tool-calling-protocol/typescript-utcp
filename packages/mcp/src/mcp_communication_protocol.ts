@@ -409,7 +409,20 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       // that gate, a tool error that merely mentions authorization
       // ("Authorization header missing for downstream API") would evict a
       // healthy session and throw away a valid OAuth token.
-      if (err.code === ErrorCode.ConnectionClosed) return 'transient';
+      //
+      // -32000 needs one more discriminator: JSON-RPC reserves the
+      // -32000..-32099 band for SERVER-defined errors, so a server can
+      // legitimately answer a tool call with -32000 — and that response
+      // arrives through a perfectly healthy session. The SDK's client-side
+      // ConnectionClosed is always constructed with the fixed text
+      // "Connection closed" (shared/protocol.js), while a server-relayed
+      // error carries the server's own message — so require both. A server
+      // that echoes the reserved code AND that exact phrase costs one
+      // spurious evict-and-retry; accepted, since the alternative (bare
+      // code) mis-evicts on every server-defined -32000.
+      if (err.code === ErrorCode.ConnectionClosed && /\bconnection closed\b/i.test(err.message)) {
+        return 'transient';
+      }
       if (err.code === ErrorCode.RequestTimeout) return 'timeout';
       return null;
     }
