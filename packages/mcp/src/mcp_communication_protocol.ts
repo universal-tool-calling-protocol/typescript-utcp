@@ -1,6 +1,6 @@
 // packages/mcp/src/mcp_communication_protocol.ts
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
-import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport, StreamableHTTPClientTransportOptions, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import axios, { AxiosInstance } from 'axios';
@@ -124,15 +124,21 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
    * protocols, so one client closing must not brick MCP for every other
    * client in the process (which is exactly what a sticky closed flag did).
    *
-   * `_closing` is true only while a close's sweep runs — session creation
-   * refuses during that window. `_closeGeneration` increments at each
+   * `_activeDrains` counts close() sweeps currently running — session
+   * creation refuses while ANY is in flight. A counter, not a boolean:
+   * two overlapping close() calls each clear a boolean on their own way
+   * out, so the faster one (a second close sees an already-emptied cache
+   * and finishes immediately) would reopen the gate while the first sweep
+   * is still awaiting a transport's close() — letting a new session dial
+   * and cache itself inside that outstanding close, which then returns
+   * with live resources behind it. `_closeGeneration` increments at each
    * close: creation captures it on entry and re-checks it before dialing
    * (a close can land during the OAuth token fetch) and again after
-   * `connect()` resolves (the sweep snapshots the cache before an in-flight
-   * connect has landed, so a session caching itself afterwards would
-   * otherwise outlive the close with a live transport).
+   * `connect()` resolves (the sweep snapshots the cache before an
+   * in-flight connect has landed, so a session caching itself afterwards
+   * would otherwise outlive the close with a live transport).
    */
-  private _closing = false;
+  private _activeDrains = 0;
   private _closeGeneration = 0;
 
   constructor() {
@@ -246,7 +252,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     // Worded without the transient markers ("closed", "disconnected") on
     // purpose, so `_withSession` does not classify shutdown as a transport
     // hiccup and spend a retry on it.
-    if (this._closing) {
+    if (this._activeDrains > 0) {
       throw new Error(`McpCommunicationProtocol is shutting down; refusing to create a session for '${sessionKey}'.`);
     }
     const closeGenerationAtStart = this._closeGeneration;
@@ -329,14 +335,14 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
     // A close() that began during the async work above (the OAuth token
     // fetch is an await) must abort BEFORE a connection is dialed at all.
-    if (this._closing || this._closeGeneration !== closeGenerationAtStart) {
+    if (this._activeDrains > 0 || this._closeGeneration !== closeGenerationAtStart) {
       throw new Error(`McpCommunicationProtocol was shut down while connecting '${sessionKey}'.`);
     }
 
     const mcpClient = new McpClient({ name: `utcp-mcp-client-${sessionKey}`, version: '1.0.1' });
     try {
       await mcpClient.connect(transport);
-      if (this._closing || this._closeGeneration !== closeGenerationAtStart) {
+      if (this._activeDrains > 0 || this._closeGeneration !== closeGenerationAtStart) {
         // A close() intervened while we were connecting. Its sweep
         // snapshotted the cache before this session existed, so caching it
         // now would leave a live transport behind after that close returned.
@@ -391,14 +397,21 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     // fallback for errors that arrive wrapped or stringified (and for SDK
     // copies that fail an instanceof across duplicated installs).
     if (err instanceof McpError) {
-      // A JSON-RPC-level error means the session DELIVERED a well-formed
-      // response — the transport is alive, whatever the error text says.
-      // Without this gate, a tool error that merely mentions authorization
+      // Two of the SDK's codes are raised CLIENT-side and describe the
+      // transport, not a server response:
+      //   - ConnectionClosed (-32000): the session dropped mid-request — the
+      //     same condition the "closed" substring used to classify, so it
+      //     stays transient (evict + one retry against a fresh dial).
+      //   - RequestTimeout (-32001): the request never completed; the
+      //     session is suspect, evict without retry.
+      // Every OTHER McpError is a well-formed JSON-RPC response from a live
+      // session — the transport works, whatever the error text says. Without
+      // that gate, a tool error that merely mentions authorization
       // ("Authorization header missing for downstream API") would evict a
-      // healthy session and throw away a valid OAuth token. The single
-      // exception is the SDK's own request-timeout code: the request never
-      // completed and the session is suspect.
-      return err.code === -32001 ? 'timeout' : null;
+      // healthy session and throw away a valid OAuth token.
+      if (err.code === ErrorCode.ConnectionClosed) return 'transient';
+      if (err.code === ErrorCode.RequestTimeout) return 'timeout';
+      return null;
     }
     if (err instanceof StreamableHTTPError && (err.code === 401 || err.code === 403)) {
       return 'auth';
@@ -626,7 +639,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
   public async close(): Promise<void> {
     this._logInfo("Closing all active MCP sessions.");
-    this._closing = true;
+    this._activeDrains += 1;
     this._closeGeneration += 1;
     try {
       const cleanupPromises = Array.from(this._mcpSessions.keys()).map(key => this._cleanupSession(key));
@@ -636,7 +649,10 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       // Drain complete — the shared registry instance stays usable. This
       // instance serves every UtcpClient in the process (see the field
       // docs), so staying closed would take MCP away from all of them.
-      this._closing = false;
+      // Decrement, not reset: an overlapping close() that finished faster
+      // must not reopen the gate while this sweep is still closing
+      // transports.
+      this._activeDrains -= 1;
     }
     this._logInfo("MCP Communication Protocol drained all sessions and cleaned up.");
   }

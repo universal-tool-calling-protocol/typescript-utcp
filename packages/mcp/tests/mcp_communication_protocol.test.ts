@@ -6,7 +6,7 @@ import { McpCommunicationProtocol, McpCallTemplate } from "../src/index";
 import { McpHttpServerSchema } from "../src/mcp_call_template";
 import { IUtcpClient } from "@utcp/sdk";
 import { Client as McpSdkClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const HTTP_PORT = 9999;
@@ -594,6 +594,61 @@ describe("McpCommunicationProtocol", () => {
       await expect(run(protocol, client)).rejects.toThrow("nope");
       expect(client.closed).toBe(1);
       expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+    });
+
+    test("a structured ConnectionClosed (-32000) stays transient: evict + one retry", async () => {
+      // -32000 is raised CLIENT-side by the SDK when the session drops
+      // mid-request — the exact condition the old "closed" substring
+      // classified as transient. The structured gate must not demote it to
+      // an operation-level error, or the dead transport stays cached with
+      // no retry.
+      const protocol = new McpCommunicationProtocol();
+      let calls = 0;
+      const client = seed(protocol, () => {
+        calls += 1;
+        return calls === 1
+          ? Promise.reject(new McpError(ErrorCode.ConnectionClosed, "Connection closed"))
+          : Promise.resolve("ok");
+      });
+
+      await expect(run(protocol, client)).resolves.toBe("ok");
+      expect(calls).toBe(2); // retried once against a fresh session
+      expect(client.closed).toBe(1); // the dropped session was evicted
+    });
+
+    test("overlapping close() calls keep the gate shut until the slowest sweep finishes", async () => {
+      // A boolean gate is cleared by whichever close() finishes first — and a
+      // second close() finds an already-emptied cache and finishes
+      // immediately, reopening creation while the first sweep still awaits a
+      // transport's close(). A session dialed in that window outlives the
+      // first close with live resources.
+      const originalConnect = McpSdkClient.prototype.connect;
+      McpSdkClient.prototype.connect = function () { return Promise.resolve(); } as any;
+      try {
+        const protocol = new McpCommunicationProtocol();
+        let releaseClose!: () => void;
+        const slow = {
+          close() { return new Promise<void>((res) => { releaseClose = res; }); },
+        };
+        (protocol as any)._mcpSessions.set(KEY, slow);
+
+        const drain1 = protocol.close();   // stuck awaiting slow.close()
+        const drain2 = protocol.close();   // sees an empty cache, finishes fast
+        await drain2;
+
+        // The first sweep is still running — creation must stay refused.
+        await expect((protocol as any)._getOrCreateSession("s", CONFIG))
+          .rejects.toThrow("shutting down");
+
+        releaseClose();
+        await drain1;
+
+        // Both drains done — the shared instance is usable again.
+        const created = await (protocol as any)._getOrCreateSession("s", CONFIG);
+        expect(created).toBeDefined();
+      } finally {
+        McpSdkClient.prototype.connect = originalConnect;
+      }
     });
 
     test("a structured McpError -32001 still evicts as a timeout", async () => {
