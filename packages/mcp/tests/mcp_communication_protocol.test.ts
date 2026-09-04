@@ -734,8 +734,19 @@ describe("McpCommunicationProtocol", () => {
       expect(processResult({ content: [{ type: "text", text: "42" }], structuredContent: { result: 42 } })).toBe(42);
     });
 
+    test("unwraps a FastMCP-style {result} wrapper around an array", () => {
+      expect(processResult({ content: [], structuredContent: { result: ["a", "b"] } })).toEqual(["a", "b"]);
+    });
+
     test("does not unwrap an object that merely has a result key among others", () => {
       const structured = { result: 1, extra: 2 };
+      expect(processResult({ content: [], structuredContent: structured })).toEqual(structured);
+    });
+
+    test("does not unwrap a genuine single-key object return whose result is itself an object", () => {
+      // FastMCP only wraps non-object returns, so { result: { ... } } is a
+      // real object return from the tool and must keep its shape.
+      const structured = { result: { nested: true } };
       expect(processResult({ content: [], structuredContent: structured })).toEqual(structured);
     });
 

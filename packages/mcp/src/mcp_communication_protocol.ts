@@ -364,7 +364,15 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     } catch (e: any) {
       // If connection fails, don't cache the broken client
       this._logError(`Failed to connect MCP client for '${sessionKey}':`, e.message);
-      if (serverConfig.transport === 'stdio' && process.env.UTCP_MCP_CHILD_STDERR !== 'inherit') {
+      // Only hint when the child actually failed to start. A close() that
+      // raced with this connect throws our own shutdown error above, and
+      // that is not something stderr would explain.
+      if (
+        serverConfig.transport === 'stdio' &&
+        process.env.UTCP_MCP_CHILD_STDERR !== 'inherit' &&
+        this._activeDrains === 0 &&
+        this._closeGeneration === closeGenerationAtStart
+      ) {
         this._logError(
           `The child's stderr was suppressed. Re-run with UTCP_MCP_CHILD_STDERR=inherit ` +
           `to see what '${sessionKey}' printed while starting.`,
@@ -713,10 +721,15 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   }
 
   /**
-   * FastMCP-style servers wrap non-object tool returns as `{ result: value }`
-   * so that `structuredContent` is always an object. Unwrap exactly that
-   * single-key shape; an object that merely has a `result` key among others
-   * is a genuine object return and is passed through untouched.
+   * FastMCP-style servers wrap NON-OBJECT tool returns (primitives, arrays,
+   * null) as `{ result: value }` so that `structuredContent` is always an
+   * object; object returns are sent as-is. Unwrap exactly that shape: a
+   * single `result` key whose value is not a plain object. A single-key
+   * `{ result: { ... } }` is therefore a genuine object return and passes
+   * through untouched, as does any object with other keys. A genuine
+   * `{ result: <primitive or array> }` return is indistinguishable from the
+   * wrapper on the wire and is unwrapped too; that ambiguity is inherent to
+   * the FastMCP convention.
    */
   private _unwrapStructuredContent(structured: any): any {
     if (
@@ -726,7 +739,11 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       Object.keys(structured).length === 1 &&
       'result' in structured
     ) {
-      return structured.result;
+      const inner = structured.result;
+      const innerIsPlainObject = inner !== null && typeof inner === 'object' && !Array.isArray(inner);
+      if (!innerIsPlainObject) {
+        return inner;
+      }
     }
     return structured;
   }
