@@ -145,6 +145,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
     headers: Record<string, string>,
     auth: { username: string; password: string } | undefined,
     cookies: Record<string, string>,
+    signal: AbortSignal,
   ): Promise<void> {
     if (auth) {
       const credentials = Buffer.from(`${auth.username}:${auth.password}`).toString('base64');
@@ -160,7 +161,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
     }
 
     if (provider.auth && 'token_url' in provider.auth) {
-      const token = await this._handleOAuth2(provider.auth as OAuth2Auth, SseCommunicationProtocol.HANDSHAKE_TIMEOUT_MS);
+      const token = await this._handleOAuth2(provider.auth as OAuth2Auth, signal);
       headers['Authorization'] = `Bearer ${token}`;
     }
   }
@@ -185,11 +186,14 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
 
     this._logInfo(`Discovering tools from '${provider.name}' (SSE) at ${url}`);
 
+    // One handshake-sized deadline for the whole discovery call, token fetch included.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SseCommunicationProtocol.HANDSHAKE_TIMEOUT_MS);
     try {
       const requestHeaders: Record<string, string> = provider.headers ? { ...provider.headers } : {};
       const queryParams: Record<string, any> = {};
       const { auth, cookies } = this._applyAuth(provider, requestHeaders, queryParams);
-      await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies);
+      await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies, controller.signal);
 
       // Build URL with query parameters
       const urlObj = new URL(url);
@@ -207,6 +211,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         method: 'GET',
         headers: requestHeaders,
         redirect: 'error',
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -233,6 +238,8 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         success: false,
         errors: [error.message || String(error)],
       };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -310,9 +317,16 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
     // The rest of the arguments are query parameters
     const queryParams: Record<string, any> = { ...remainingArgs };
 
-    // Handle authentication
+    // Handle authentication. The token fetch (both credential methods) shares
+    // one handshake-sized deadline so a stalled token endpoint cannot hang the call.
     const { auth, cookies } = this._applyAuth(provider, requestHeaders, queryParams);
-    await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies);
+    const authController = new AbortController();
+    const authTimer = setTimeout(() => authController.abort(), SseCommunicationProtocol.HANDSHAKE_TIMEOUT_MS);
+    try {
+      await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies, authController.signal);
+    } finally {
+      clearTimeout(authTimer);
+    }
 
     const urlObj = new URL(url);
     Object.entries(queryParams).forEach(([key, value]) => {
@@ -591,10 +605,10 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
    * first and then as a Basic Auth header. Tokens are cached per full OAuth
    * configuration (token URL, client id, secret, scope), never per client_id
    * alone: two templates may share a client_id but point at different issuers.
-   * Each token request is bounded by `timeoutMs` so a stalled token endpoint
-   * cannot hang the tool call before its own timeout even starts.
+   * Both credential methods run under the caller's `signal`, which carries
+   * the call's own deadline, so the whole token flow can never exceed it.
    */
-  private async _handleOAuth2(authDetails: OAuth2Auth, timeoutMs: number): Promise<string> {
+  private async _handleOAuth2(authDetails: OAuth2Auth, signal: AbortSignal): Promise<string> {
     const clientId = authDetails.client_id;
 
     // The token URL may come from an untrusted call template; validate it
@@ -618,23 +632,20 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
     };
 
     const requestToken = async (headers: Record<string, string>, form: Record<string, string>): Promise<string> => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        const response = await fetch(authDetails.token_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
-          body: new URLSearchParams(form).toString(),
-          redirect: 'error',
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return storeToken(await response.json());
-      } finally {
-        clearTimeout(timer);
+      if (signal.aborted) {
+        throw new Error('Timed out before the token request could start.');
       }
+      const response = await fetch(authDetails.token_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+        body: new URLSearchParams(form).toString(),
+        redirect: 'error',
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      return storeToken(await response.json());
     };
 
     // Method 1: credentials in the request body

@@ -239,6 +239,15 @@ describe("StreamableHttpCommunicationProtocol", () => {
       await expect(gen.next()).rejects.toThrow(/http_method is GET/);
     });
 
+    test("GET with a body_field supplied as undefined is still rejected, not silently dropped", async () => {
+      const gen = protocol.callToolStreaming(mockClient, "stream_server.t", { payload: undefined }, template({
+        url: `http://localhost:${serverPort}/ndjson`,
+        http_method: "GET",
+        body_field: "payload",
+      }));
+      await expect(gen.next()).rejects.toThrow(/http_method is GET/);
+    });
+
     test("OAuth2 tokens are cached per token endpoint, not per client_id", async () => {
       tokenHits.a = 0;
       tokenHits.b = 0;
@@ -257,16 +266,18 @@ describe("StreamableHttpCommunicationProtocol", () => {
       expect(tokenHits).toEqual({ a: 1, b: 1 });
     });
 
-    test("a stalled OAuth2 token endpoint is bounded by the call timeout", async () => {
+    test("a stalled OAuth2 token endpoint is bounded by the call timeout, once, not per credential method", async () => {
       const started = Date.now();
       const call = protocol.callTool(mockClient, "stream_server.t", {}, template({
         url: `http://localhost:${serverPort}/whoami`,
-        timeout: 300,
+        timeout: 800,
         auth: { auth_type: "oauth2", token_url: `http://localhost:${serverPort}/token-hang`, client_id: "c", client_secret: "s" } as any,
       }));
       try {
         await expect(call).rejects.toThrow(/Failed to fetch OAuth2 token/);
-        expect(Date.now() - started).toBeLessThan(3000);
+        // Two credential methods with a fresh 800 ms budget each would take
+        // about 1600 ms; a single shared deadline finishes just after 800 ms.
+        expect(Date.now() - started).toBeLessThan(1300);
       } finally {
         for (const r of hangingToken.splice(0)) r.end();
       }

@@ -99,6 +99,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     headers: Record<string, string>,
     auth: { username: string; password: string } | undefined,
     cookies: Record<string, string>,
+    signal: AbortSignal,
   ): Promise<void> {
     if (auth) {
       const credentials = Buffer.from(`${auth.username}:${auth.password}`).toString('base64');
@@ -114,7 +115,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     }
 
     if (provider.auth && 'token_url' in provider.auth) {
-      const token = await this._handleOAuth2(provider.auth as OAuth2Auth, provider.timeout || 60000);
+      const token = await this._handleOAuth2(provider.auth as OAuth2Auth, signal);
       headers['Authorization'] = `Bearer ${token}`;
     }
   }
@@ -139,11 +140,14 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
 
     this._logInfo(`Discovering tools from '${provider.name}' (HTTP Stream) at ${url}`);
 
+    // One deadline for the whole discovery call, token fetch included.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), provider.timeout || 60000);
     try {
       const requestHeaders: Record<string, string> = provider.headers ? { ...provider.headers } : {};
       const queryParams: Record<string, any> = {};
       const { auth, cookies } = this._applyAuth(provider, requestHeaders, queryParams);
-      await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies);
+      await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies, controller.signal);
 
       // Build URL with query parameters
       const urlObj = new URL(url);
@@ -155,8 +159,6 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
       // handshakes shouldn't redirect, and doing so silently would let an
       // attacker-controlled endpoint steer the stream into an internal
       // service (GHSA-9qhg-99ww-9mqc).
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), provider.timeout || 60000);
       try {
         const response = await fetch(urlObj.toString(), {
           method: provider.http_method || 'GET',
@@ -184,6 +186,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
         clearTimeout(timer);
       }
     } catch (error: any) {
+      clearTimeout(timer);
       this._logError(`Error discovering tools from '${provider.name}': ${error.message}`);
       return {
         manualCallTemplate: provider,
@@ -263,12 +266,15 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
       }
     }
 
-    if (provider.body_field && provider.body_field in remainingArgs) {
+    // "Supplied" means the caller passed the field, whatever its value; a
+    // field already mapped to a header above is no longer in remainingArgs.
+    const bodyFieldSupplied = !!provider.body_field && provider.body_field in remainingArgs;
+    if (provider.body_field && bodyFieldSupplied) {
       bodyContent = remainingArgs[provider.body_field];
       delete remainingArgs[provider.body_field];
     }
 
-    if (bodyContent !== undefined && (provider.http_method || 'GET').toUpperCase() === 'GET') {
+    if (bodyFieldSupplied && (provider.http_method || 'GET').toUpperCase() === 'GET') {
       // fetch() rejects a GET with a body before anything reaches the server;
       // surface the misconfiguration as a clear error instead.
       throw new Error(
@@ -288,7 +294,16 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
 
     // Handle authentication
     const { auth, cookies } = this._applyAuth(provider, requestHeaders, queryParams);
-    await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies);
+
+    // One deadline for the whole call: token fetch, request and stream.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), provider.timeout || 60000);
+    try {
+      await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies, controller.signal);
+    } catch (error) {
+      clearTimeout(timer);
+      throw error;
+    }
 
     const urlObj = new URL(url);
     Object.entries(queryParams).forEach(([key, value]) => {
@@ -314,8 +329,6 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
 
     this._logInfo(`Executing streaming HTTP tool '${toolName}' with URL: ${urlObj.toString()} and method: ${provider.http_method}`);
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), provider.timeout || 60000);
     try {
       // ``redirect: 'error'`` -- see registerManual for rationale (GHSA-9qhg-99ww-9mqc).
       // ``keepalive: false`` -- do not take a pooled socket for the stream. Bun's
@@ -449,10 +462,10 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
    * first and then as a Basic Auth header. Tokens are cached per full OAuth
    * configuration (token URL, client id, secret, scope), never per client_id
    * alone: two templates may share a client_id but point at different issuers.
-   * Each token request is bounded by `timeoutMs` so a stalled token endpoint
-   * cannot hang the tool call before its own timeout even starts.
+   * Both credential methods run under the caller's `signal`, which carries
+   * the call's own deadline, so the whole token flow can never exceed it.
    */
-  private async _handleOAuth2(authDetails: OAuth2Auth, timeoutMs: number): Promise<string> {
+  private async _handleOAuth2(authDetails: OAuth2Auth, signal: AbortSignal): Promise<string> {
     const clientId = authDetails.client_id;
 
     // The token URL may come from an untrusted call template; validate it
@@ -476,23 +489,20 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     };
 
     const requestToken = async (headers: Record<string, string>, form: Record<string, string>): Promise<string> => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        const response = await fetch(authDetails.token_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
-          body: new URLSearchParams(form).toString(),
-          redirect: 'error',
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        return storeToken(await response.json());
-      } finally {
-        clearTimeout(timer);
+      if (signal.aborted) {
+        throw new Error('Timed out before the token request could start.');
       }
+      const response = await fetch(authDetails.token_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+        body: new URLSearchParams(form).toString(),
+        redirect: 'error',
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      return storeToken(await response.json());
     };
 
     // Method 1: credentials in the request body
