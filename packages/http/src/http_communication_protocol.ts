@@ -15,6 +15,7 @@ import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
 import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf } from './_security';
 import { truncateByCodePoint } from './_text';
+import { buildUrlWithPathParams } from './_url';
 
 /**
  * HTTP communication protocol implementation for UTCP client.
@@ -248,10 +249,6 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     }
     const status = error.response.status;
     const data = error.response.data;
-    // Prefer a string `error` / `message` / `detail` field from the body; some
-    // APIs nest an OBJECT there (e.g. { error: { code, reason } }), so only use
-    // the candidate when it's actually a string — otherwise fall through to the
-    // full JSON so the real structure shows instead of "[object Object]".
     // The first of `error` / `message` / `detail` that is present decides: a
     // non-blank string is the reason; anything else (an object, say) is a
     // structured error, so return undefined to fall through to the full JSON
@@ -401,7 +398,11 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
   private async _handleOAuth2(authDetails: OAuth2Auth): Promise<string> {
     const clientId = authDetails.client_id;
 
-    const cachedToken = this._oauthTokens.get(clientId);
+    // Cache per full OAuth configuration, never per client_id alone: two
+    // templates may share a client_id but point at different issuers, scopes
+    // or secrets, and must not receive each other's tokens.
+    const cacheKey = JSON.stringify([authDetails.token_url, clientId, authDetails.client_secret, authDetails.scope || '']);
+    const cachedToken = this._oauthTokens.get(cacheKey);
     if (cachedToken && cachedToken.expiresAt > Date.now()) {
       return cachedToken.accessToken;
     }
@@ -441,7 +442,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
             throw new Error("Access token not found in response.");
           }
           const expiresAt = Date.now() + (response.data.expires_in * 1000 || 3600 * 1000);
-          this._oauthTokens.set(clientId, { accessToken: response.data.access_token, expiresAt });
+          this._oauthTokens.set(cacheKey, { accessToken: response.data.access_token, expiresAt });
           this._logInfo(`OAuth2 token fetched via body for client: '${clientId}'.`);
           return response.data.access_token;
         } catch (error: any) {
@@ -474,7 +475,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
             throw new Error("Access token not found in response.");
           }
           const expiresAt = Date.now() + (response.data.expires_in * 1000 || 3600 * 1000);
-          this._oauthTokens.set(clientId, { accessToken: response.data.access_token, expiresAt });
+          this._oauthTokens.set(cacheKey, { accessToken: response.data.access_token, expiresAt });
           this._logInfo(`OAuth2 token fetched via Basic Auth header for client: '${clientId}'.`);
           return response.data.access_token;
         } catch (error: any) {
@@ -503,25 +504,8 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
    * @throws Error if a required path parameter is missing.
    */
   private _buildUrlWithPathParams(urlTemplate: string, args: Record<string, any>): string {
-    let url = urlTemplate;
-    const pathParams = urlTemplate.match(/\{([^}]+)\}/g) || [];
-
-    for (const param of pathParams) {
-      const paramName = param.slice(1, -1);
-      if (paramName in args) {
-        // URL-encode the parameter value to prevent path injection
-        url = url.replace(param, encodeURIComponent(String(args[paramName])));
-        delete args[paramName];
-      } else {
-        throw new Error(`Missing required path parameter: ${paramName}`);
-      }
-    }
-
-    const remainingParams = url.match(/\{([^}]+)\}/g);
-    if (remainingParams && remainingParams.length > 0) {
-      throw new Error(`Missing required path parameters in URL template: ${remainingParams.join(', ')}`);
-    }
-
-    return url;
+    // Shared with the SSE and Streamable HTTP protocols: every occurrence is
+    // replaced and both `{param}` and `${param}` forms are accepted.
+    return buildUrlWithPathParams(urlTemplate, args);
   }
 }

@@ -16,6 +16,7 @@ import { IUtcpClient } from '@utcp/sdk';
 import { SseCallTemplate, SseCallTemplateSchema } from './sse_call_template';
 import { ensureSecureUrl, assertNoCrlf } from './_security';
 import { truncateByCodePoint } from './_text';
+import { buildUrlWithPathParams } from './_url';
 
 /**
  * A single parsed Server-Sent Event.
@@ -689,32 +690,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
    * Consumed parameters are removed from args so they are not sent as query parameters.
    */
   private _buildUrlWithPathParams(urlTemplate: string, args: Record<string, any>): string {
-    let url = urlTemplate;
-    // Both the `{param}` form from the spec and the `${param}` form the
-    // package README documents.
-    const placeholders = urlTemplate.match(/\$?\{([^}]+)\}/g) || [];
-    const paramNames = Array.from(new Set(
-      placeholders.map(p => (p.startsWith('${') ? p.slice(2, -1) : p.slice(1, -1)))
-    ));
-
-    for (const paramName of paramNames) {
-      if (!(paramName in args)) {
-        throw new Error(`Missing required path parameter: ${paramName}`);
-      }
-      // URL-encode the value to prevent path injection, and replace every
-      // occurrence of either form (a template may repeat a parameter).
-      // `${x}` goes first so that replacing `{x}` never leaves a stray `$`.
-      const value = encodeURIComponent(String(args[paramName]));
-      url = url.split('${' + paramName + '}').join(value).split('{' + paramName + '}').join(value);
-      delete args[paramName];
-    }
-
-    const remainingParams = url.match(/\$?\{([^}]+)\}/g);
-    if (remainingParams && remainingParams.length > 0) {
-      throw new Error(`Missing required path parameters in URL template: ${remainingParams.join(', ')}`);
-    }
-
-    return url;
+    return buildUrlWithPathParams(urlTemplate, args);
   }
 
   /**

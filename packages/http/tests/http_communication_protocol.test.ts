@@ -322,6 +322,21 @@ describe("discovery error body (streamable_http + sse)", () => {
   });
 });
 
+describe("path parameters", () => {
+  test("repeated and ${param}-style path parameters are all substituted", async () => {
+    const protocol = new HttpCommunicationProtocol();
+    const result = await protocol.callTool(mockClient, "test.path", { p: "x", extra: "1" }, {
+      name: "path_server",
+      call_template_type: "http",
+      url: `http://localhost:${serverPort}/tool/{p}/\${p}`,
+      http_method: "GET",
+    } as any);
+    expect(result.result).toBe("path_success");
+    expect(result.params).toEqual({ param1: "x", param2: "x" });
+    expect(result.query).toEqual({ extra: "1" });
+  });
+});
+
 describe("error body edge cases", () => {
   const callForbidden = async (path: string) => {
     const protocol = new HttpCommunicationProtocol();
