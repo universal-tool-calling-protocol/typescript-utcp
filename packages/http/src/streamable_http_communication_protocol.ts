@@ -298,38 +298,36 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     // One deadline for the whole call: token fetch, request and stream.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), provider.timeout || 60000);
+    // Everything from here on runs under the deadline, and the single
+    // finally below clears the timer on every exit path, including a throw
+    // while building the URL or serializing the body.
     try {
       await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies, controller.signal);
-    } catch (error) {
-      clearTimeout(timer);
-      throw error;
-    }
 
-    const urlObj = new URL(url);
-    Object.entries(queryParams).forEach(([key, value]) => {
-      if (value === undefined || value === null) return;
-      urlObj.searchParams.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
-    });
+      const urlObj = new URL(url);
+      Object.entries(queryParams).forEach(([key, value]) => {
+        if (value === undefined || value === null) return;
+        urlObj.searchParams.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+      });
 
-    let body: BodyInit | undefined = undefined;
-    if (bodyContent !== undefined) {
-      const hasContentType = Object.keys(requestHeaders).some(h => h.toLowerCase() === 'content-type');
-      if (!hasContentType) {
-        requestHeaders['Content-Type'] = provider.content_type;
+      let body: BodyInit | undefined = undefined;
+      if (bodyContent !== undefined) {
+        const hasContentType = Object.keys(requestHeaders).some(h => h.toLowerCase() === 'content-type');
+        if (!hasContentType) {
+          requestHeaders['Content-Type'] = provider.content_type;
+        }
+        const contentType = Object.entries(requestHeaders).find(([h]) => h.toLowerCase() === 'content-type')?.[1] || '';
+        if (contentType.includes('application/json')) {
+          body = JSON.stringify(bodyContent);
+        } else if (typeof bodyContent === 'string' || bodyContent instanceof Uint8Array || bodyContent instanceof ArrayBuffer) {
+          body = bodyContent as BodyInit;
+        } else {
+          body = JSON.stringify(bodyContent);
+        }
       }
-      const contentType = Object.entries(requestHeaders).find(([h]) => h.toLowerCase() === 'content-type')?.[1] || '';
-      if (contentType.includes('application/json')) {
-        body = JSON.stringify(bodyContent);
-      } else if (typeof bodyContent === 'string' || bodyContent instanceof Uint8Array || bodyContent instanceof ArrayBuffer) {
-        body = bodyContent as BodyInit;
-      } else {
-        body = JSON.stringify(bodyContent);
-      }
-    }
 
-    this._logInfo(`Executing streaming HTTP tool '${toolName}' with URL: ${urlObj.toString()} and method: ${provider.http_method}`);
+      this._logInfo(`Executing streaming HTTP tool '${toolName}' with URL: ${urlObj.toString()} and method: ${provider.http_method}`);
 
-    try {
       // ``redirect: 'error'`` -- see registerManual for rationale (GHSA-9qhg-99ww-9mqc).
       // ``keepalive: false`` -- do not take a pooled socket for the stream. Bun's
       // fetch transparently re-issues a request when a reused keep-alive socket
