@@ -277,7 +277,10 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         : data == null
           ? error.message
           : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
-    const detail = rawDetail.length > MAX_DETAIL_CHARS ? `${rawDetail.slice(0, MAX_DETAIL_CHARS)}…` : rawDetail;
+    // Truncate by code point, not UTF-16 unit, so a multi-byte character on
+    // the boundary is dropped whole rather than leaving a lone surrogate.
+    const codePoints = Array.from(rawDetail);
+    const detail = codePoints.length > MAX_DETAIL_CHARS ? `${codePoints.slice(0, MAX_DETAIL_CHARS).join('')}…` : rawDetail;
     const normalized = new Error(
       `HTTP ${status} calling tool '${toolName}': ${detail}`,
     ) as Error & { status: number; data: unknown };

@@ -97,6 +97,11 @@ beforeAll(async () => {
     res.status(403).type("text/plain").send("x".repeat(5000));
   });
 
+  // An emoji sitting exactly on the truncation boundary of the message.
+  app.post("/forbidden-emoji-boundary", (req, res) => {
+    res.status(403).type("text/plain").send("x".repeat(1999) + "😀" + "y".repeat(50));
+  });
+
   // A structured `error` next to a generic `message`: the structure must win.
   app.post("/forbidden-object-then-message", (req, res) => {
     res.status(422).json({ error: { code: "INVALID_FIELD", reason: "value out of range" }, message: "Request failed" });
@@ -348,6 +353,15 @@ describe("error body edge cases", () => {
     expect(thrown.message).toContain("INVALID_FIELD");
     expect(thrown.message).toContain("value out of range");
     expect(thrown.message).not.toContain("[object Object]");
+  });
+
+  test("truncation never splits a surrogate pair", async () => {
+    const thrown = await callForbidden("/forbidden-emoji-boundary");
+    expect(thrown.status).toBe(403);
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(loneSurrogate.test(thrown.message)).toBe(false);
+    expect(thrown.message).toContain("😀");
+    expect(thrown.message).toContain("…");
   });
 
   test("a huge error body is truncated in the message but kept in full on data", async () => {
