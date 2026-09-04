@@ -13,7 +13,7 @@ import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
-import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf } from './_security';
+import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf, isLoopbackUrl } from './_security';
 import { truncateByCodePoint, collapseControlChars } from './_text';
 import { buildUrlWithPathParams } from './_url';
 
@@ -97,6 +97,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
       if (responseData && responseData.utcp_version && Array.isArray(responseData.tools)) {
         this._logInfo(`Detected UTCP manual from '${httpCallTemplate.name}'.`);
         utcpManual = UtcpManualSchema.parse(responseData);
+        this._rejectRemoteLoopbackToolUrls(httpCallTemplate.url, utcpManual);
       } else if (responseData && (responseData.openapi || responseData.swagger || responseData.paths)) {
         this._logInfo(`Assuming OpenAPI spec from '${httpCallTemplate.name}'. Converting to UTCP manual.`);
         const converter = new OpenApiConverter(responseData, {
@@ -400,6 +401,31 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
       }
     }
     return { cookies, authHeaderNames };
+  }
+
+  /**
+   * Reject a remotely-discovered manual that points tool calls at loopback.
+   *
+   * `ensureSecureUrl` deliberately permits loopback HTTP so local development
+   * works, which leaves one gap: a manual fetched from a remote (non-loopback)
+   * origin can still declare tool URLs on the agent's own loopback interface.
+   * The OpenAPI converter already closes this for specs it converts; hand-written
+   * UTCP manuals bypass the converter, so the same rule is applied here. A manual
+   * fetched from loopback (local dev) is exempt, exactly as the converter exempts
+   * a local spec.
+   */
+  private _rejectRemoteLoopbackToolUrls(discoveryUrl: string, manual: { tools?: Array<any> }): void {
+    if (isLoopbackUrl(discoveryUrl)) return;
+    for (const tool of manual.tools || []) {
+      const toolUrl = tool?.tool_call_template?.url;
+      if (typeof toolUrl === 'string' && isLoopbackUrl(toolUrl)) {
+        throw new Error(
+          `Security error during manual discovery: a manual fetched from ${JSON.stringify(discoveryUrl)} ` +
+          `declares a loopback tool URL (${JSON.stringify(toolUrl)}) for tool ${JSON.stringify(tool?.name)}. ` +
+          `A remote manual is not allowed to redirect tool calls at the agent's own loopback interface.`
+        );
+      }
+    }
   }
 
   /**
