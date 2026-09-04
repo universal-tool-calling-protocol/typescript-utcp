@@ -17,7 +17,9 @@ export function buildUrlWithPathParams(urlTemplate: string, args: Record<string,
   ));
 
   for (const paramName of paramNames) {
-    if (!(paramName in args)) {
+    // Own properties only: `in` would accept inherited names such as
+    // `constructor` and substitute a stringified function.
+    if (!Object.prototype.hasOwnProperty.call(args, paramName)) {
       throw new Error(`Missing required path parameter: ${paramName}`);
     }
     // `${x}` goes first so that replacing `{x}` never leaves a stray `$`.

@@ -357,7 +357,10 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         // Anything but an event stream would be parsed into silence: a JSON
         // error document, say, yields zero events and a "successful" call.
         const contentType = response.headers.get('content-type') || '';
-        if (!contentType.toLowerCase().includes('text/event-stream')) {
+        // Compare the media type exactly (parameters such as charset allowed),
+        // so "text/event-stream-invalid" does not pass a substring check.
+        const mediaType = contentType.split(';', 1)[0].trim().toLowerCase();
+        if (mediaType !== 'text/event-stream') {
           try {
             await response.body?.cancel();
           } catch {

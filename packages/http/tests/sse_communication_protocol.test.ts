@@ -480,16 +480,23 @@ describe("SseCommunicationProtocol", () => {
 
     test("a query-string API key is not written to the logs", async () => {
       const logSpy = spyOn(console, "log");
+      const errSpy = spyOn(console, "error");
       try {
         await protocol.callTool(mockClient, "sse_server.t", {}, template({
           url: `http://localhost:${serverPort}/events`,
           auth: { auth_type: "api_key", api_key: "qs-secret-value", var_name: "api_key", location: "query" } as any,
         }));
-        const logged = logSpy.mock.calls.map(args => args.map(String).join(" ")).join("\n");
+        // Also a failing call, which goes through the error log sink.
+        await protocol.callTool(mockClient, "sse_server.t", {}, template({
+          url: `http://localhost:${serverPort}/error`,
+          auth: { auth_type: "api_key", api_key: "qs-secret-value", var_name: "api_key", location: "query" } as any,
+        })).catch(() => undefined);
+        const logged = [...logSpy.mock.calls, ...errSpy.mock.calls].map(args => args.map(String).join(" ")).join("\n");
         expect(logged).not.toContain("qs-secret-value");
         expect(logged).toContain("/events");
       } finally {
         logSpy.mockRestore();
+        errSpy.mockRestore();
       }
     });
   });

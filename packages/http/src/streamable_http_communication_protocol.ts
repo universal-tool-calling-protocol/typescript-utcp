@@ -354,6 +354,13 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
           while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
             const line = buffer.slice(0, newlineIndex).replace(/\r$/, '');
             buffer = buffer.slice(newlineIndex + 1);
+            if (line.length > StreamableHttpCommunicationProtocol.MAX_LINE_CHARS) {
+              // A complete but oversized line arriving in one read must hit
+              // the same cap as an unterminated one.
+              throw new Error(
+                `NDJSON line exceeded ${StreamableHttpCommunicationProtocol.MAX_LINE_CHARS} characters`
+              );
+            }
             if (line.trim()) {
               yield parseLine(line);
             }

@@ -128,7 +128,8 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         manualCallTemplate: httpCallTemplate,
         manual: UtcpManualSchema.parse({ tools: [] }),
         success: false,
-        errors: [this._normalizeToolError(httpCallTemplate.name ?? '', error, `discovering tools from '${httpCallTemplate.name}'`).message]
+        // 200 characters, like the SSE and Streamable HTTP discovery errors.
+        errors: [this._normalizeToolError(httpCallTemplate.name ?? '', error, `discovering tools from '${httpCallTemplate.name}'`, 200).message]
       };
     }
   }
@@ -243,7 +244,12 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
    * `status` / `data` fields, so the reason survives both `.message` readers and
    * structured serialization. Non-HTTP errors (network, timeout) pass through.
    */
-  private _normalizeToolError(toolName: string, error: any, context: string = `calling tool '${toolName}'`): Error {
+  private _normalizeToolError(
+    toolName: string,
+    error: any,
+    context: string = `calling tool '${toolName}'`,
+    maxDetailChars: number = 2000,
+  ): Error {
     if (!axios.isAxiosError(error) || !error.response) {
       return error instanceof Error ? error : new Error(String(error));
     }
@@ -268,7 +274,6 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     // axios's own message) rather than emitting a message that ends in a
     // bare colon. Bound the detail so a multi-megabyte error page (an HTML
     // stack trace, say) does not end up in messages and logs in full.
-    const MAX_DETAIL_CHARS = 2000;
     const rawDetail =
       typeof data === 'string'
         ? data.trim() || error.response.statusText || error.message
@@ -277,7 +282,10 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
           : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
     // Truncate by code point, not UTF-16 unit, so a multi-byte character on
     // the boundary is dropped whole rather than leaving a lone surrogate.
-    const detail = truncateByCodePoint(collapseControlChars(rawDetail), MAX_DETAIL_CHARS);
+    // A body made only of control characters collapses to nothing: fall back
+    // to the status text again rather than emitting a bare colon.
+    const collapsed = collapseControlChars(rawDetail) || collapseControlChars(error.response.statusText || error.message || '');
+    const detail = truncateByCodePoint(collapsed, maxDetailChars);
     const normalized = new Error(
       `HTTP ${status} ${context}: ${detail}`,
     ) as Error & { status: number; data: unknown };

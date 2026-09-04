@@ -63,8 +63,10 @@ export async function readErrorDetail(response: Response, maxChars: number): Pro
     while (bytes < MAX_ERROR_BODY_READ_BYTES) {
       const { done, value } = await reader.read();
       if (done) break;
-      bytes += value.length;
-      text += decoder.decode(value, { stream: true });
+      // A single oversized chunk must not defeat the budget either.
+      const chunk = value.subarray(0, MAX_ERROR_BODY_READ_BYTES - bytes);
+      bytes += chunk.length;
+      text += decoder.decode(chunk, { stream: true });
     }
     text += decoder.decode();
   } catch {
