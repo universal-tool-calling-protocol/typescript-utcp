@@ -580,8 +580,10 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         event.id = value;
       } else if (field === 'retry') {
         // Spec: only a value made of ASCII digits sets the reconnection time.
-        // An absurdly long digit string parses to Infinity and is ignored.
-        if (/^[0-9]+$/.test(value) && Number.isFinite(Number(value))) {
+        // An overflowing digit string becomes Infinity, which the reconnect
+        // delay cap turns into MAX_RECONNECT_DELAY_MS: the server asked for a
+        // long wait and gets the longest one allowed.
+        if (/^[0-9]+$/.test(value)) {
           event.retry = Number(value);
         }
       }
