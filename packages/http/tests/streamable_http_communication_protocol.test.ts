@@ -276,7 +276,6 @@ describe("StreamableHttpCommunicationProtocol", () => {
     });
 
     test("a stalled OAuth2 token endpoint is bounded by the call timeout, once, not per credential method", async () => {
-      const started = Date.now();
       const call = protocol.callTool(mockClient, "stream_server.t", {}, template({
         url: `http://localhost:${serverPort}/whoami`,
         timeout: 800,
@@ -284,9 +283,9 @@ describe("StreamableHttpCommunicationProtocol", () => {
       }));
       try {
         await expect(call).rejects.toThrow(/Failed to fetch OAuth2 token/);
-        // Two credential methods with a fresh 800 ms budget each would take
-        // about 1600 ms; a single shared deadline finishes just after 800 ms.
-        expect(Date.now() - started).toBeLessThan(1300);
+        // With one shared deadline the second credential method never starts:
+        // its signal is already aborted, so the endpoint sees a single request.
+        expect(hangingToken).toHaveLength(1);
       } finally {
         for (const r of hangingToken.splice(0)) r.end();
       }

@@ -136,6 +136,13 @@ beforeAll(async () => {
     res.end();
   });
 
+  // A retry field that is not made of digits must be ignored.
+  app.get("/events-bad-retry", (req, res) => {
+    sseHeaders(res);
+    res.write("retry: -1\ndata: {\"seq\":1}\n\nretry: 20ms\n\n");
+    res.end();
+  });
+
   // A 200 that is not an event stream at all.
   app.get("/json-not-sse", (req, res) => {
     res.json({ error: "not a stream" });
@@ -261,9 +268,14 @@ describe("SseCommunicationProtocol", () => {
     expect(result).toEqual([{ seq: 2 }]);
   });
 
-  test("handles CRLF delimiters and a trailing unterminated event", async () => {
+  test("handles CRLF delimiters and discards an unterminated trailing event (spec)", async () => {
     const result = await protocol.callTool(mockClient, "sse_server.sse_tool", {}, template({ url: `http://localhost:${serverPort}/events-crlf` }));
-    expect(result).toEqual([{ a: 1 }, { a: 2 }]);
+    expect(result).toEqual([{ a: 1 }]);
+  });
+
+  test("a malformed retry value is ignored", async () => {
+    const result = await protocol.callTool(mockClient, "sse_server.sse_tool", {}, template({ url: `http://localhost:${serverPort}/events-bad-retry` }));
+    expect(result).toEqual([{ seq: 1 }]);
   });
 
   test("body_field switches to POST with a JSON body, header_fields become headers, Accept is set", async () => {
