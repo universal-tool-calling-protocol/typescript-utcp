@@ -14,6 +14,7 @@ import { IUtcpClient } from '@utcp/sdk';
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
 import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf } from './_security';
+import { truncateByCodePoint } from './_text';
 
 /**
  * HTTP communication protocol implementation for UTCP client.
@@ -222,8 +223,71 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
       return response.data;
     } catch (error: any) {
       this._logError(`Error calling HTTP tool '${toolName}':`, error);
-      throw error;
+      throw this._normalizeToolError(toolName, error);
     }
+  }
+
+  /**
+   * Turn a raw axios error into one that actually carries the server's response.
+   *
+   * On a non-2xx, axios throws an `AxiosError` whose `.message` is the generic
+   * `"Request failed with status code 403"` — the response BODY (where servers
+   * put the real reason, e.g. `{ "error": "..." }`) sits on `error.response.data`
+   * and is otherwise lost to every caller that only reads `.message`. That body
+   * is also dropped entirely when the error is serialized across a boundary
+   * (e.g. JSON.stringify in an isolated-vm tool runner), because `Error.message`
+   * is non-enumerable and `AxiosError` doesn't serialize its `response`.
+   *
+   * This folds the status + body into the message AND attaches enumerable
+   * `status` / `data` fields, so the reason survives both `.message` readers and
+   * structured serialization. Non-HTTP errors (network, timeout) pass through.
+   */
+  private _normalizeToolError(toolName: string, error: any): Error {
+    if (!axios.isAxiosError(error) || !error.response) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+    const status = error.response.status;
+    const data = error.response.data;
+    // Prefer a string `error` / `message` / `detail` field from the body; some
+    // APIs nest an OBJECT there (e.g. { error: { code, reason } }), so only use
+    // the candidate when it's actually a string — otherwise fall through to the
+    // full JSON so the real structure shows instead of "[object Object]".
+    // The first of `error` / `message` / `detail` that is present decides: a
+    // non-blank string is the reason; anything else (an object, say) is a
+    // structured error, so return undefined to fall through to the full JSON
+    // rather than skipping ahead to a lower-priority generic string.
+    const stringField = (...candidates: unknown[]): string | undefined => {
+      for (const c of candidates) {
+        if (c === undefined || c === null) continue;
+        if (typeof c === 'string') {
+          if (c.trim()) return c;
+          continue;
+        }
+        return undefined;
+      }
+      return undefined;
+    };
+    // A blank body carries no reason: fall back to the status text (then
+    // axios's own message) rather than emitting a message that ends in a
+    // bare colon. Bound the detail so a multi-megabyte error page (an HTML
+    // stack trace, say) does not end up in messages and logs in full.
+    const MAX_DETAIL_CHARS = 2000;
+    const rawDetail =
+      typeof data === 'string'
+        ? data.trim() || error.response.statusText || error.message
+        : data == null
+          ? error.message
+          : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
+    // Truncate by code point, not UTF-16 unit, so a multi-byte character on
+    // the boundary is dropped whole rather than leaving a lone surrogate.
+    const detail = truncateByCodePoint(rawDetail, MAX_DETAIL_CHARS);
+    const normalized = new Error(
+      `HTTP ${status} calling tool '${toolName}': ${detail}`,
+    ) as Error & { status: number; data: unknown };
+    // Enumerable so they survive JSON.stringify out of an isolated-vm runner.
+    normalized.status = status;
+    normalized.data = data;
+    return normalized;
   }
 
   /**

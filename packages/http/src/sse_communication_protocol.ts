@@ -15,6 +15,7 @@ import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { SseCallTemplate, SseCallTemplateSchema } from './sse_call_template';
 import { ensureSecureUrl, assertNoCrlf } from './_security';
+import { truncateByCodePoint } from './_text';
 
 /**
  * A single parsed Server-Sent Event.
@@ -215,7 +216,15 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        // Read the body before throwing — servers put the real reason there
+        // (e.g. { "error": "..." }); discarding it leaves callers with only a
+        // status code. Fall back to statusText when the body is empty.
+        const body = await response.text().catch(() => '');
+        // Truncate like the streaming path does, so a huge error page does
+        // not land in errors[] and logs in full. By code point, so a
+        // multi-byte character on the boundary cannot leave a lone surrogate.
+        const detail = truncateByCodePoint(body.trim(), 200) || response.statusText;
+        throw new Error(`HTTP ${response.status}: ${detail}`);
       }
 
       // Discovery returns the manual as a plain JSON document.
