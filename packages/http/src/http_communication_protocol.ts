@@ -253,12 +253,18 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     // full JSON so the real structure shows instead of "[object Object]".
     const stringField = (...candidates: unknown[]): string | undefined =>
       candidates.find((c): c is string => typeof c === 'string');
-    const detail =
+    // A blank body carries no reason: fall back to the status text (then
+    // axios's own message) rather than emitting a message that ends in a
+    // bare colon. Bound the detail so a multi-megabyte error page (an HTML
+    // stack trace, say) does not end up in messages and logs in full.
+    const MAX_DETAIL_CHARS = 2000;
+    const rawDetail =
       typeof data === 'string'
-        ? data
+        ? data.trim() || error.response.statusText || error.message
         : data == null
           ? error.message
           : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
+    const detail = rawDetail.length > MAX_DETAIL_CHARS ? `${rawDetail.slice(0, MAX_DETAIL_CHARS)}…` : rawDetail;
     const normalized = new Error(
       `HTTP ${status} calling tool '${toolName}': ${detail}`,
     ) as Error & { status: number; data: unknown };

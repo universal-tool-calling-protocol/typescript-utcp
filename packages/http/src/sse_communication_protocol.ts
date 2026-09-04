@@ -219,7 +219,9 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         // (e.g. { "error": "..." }); discarding it leaves callers with only a
         // status code. Fall back to statusText when the body is empty.
         const body = await response.text().catch(() => '');
-        const detail = body.trim() || response.statusText;
+        // Truncate like the streaming path does, so a huge error page does
+        // not land in errors[] and logs in full.
+        const detail = body.trim().slice(0, 200) || response.statusText;
         throw new Error(`HTTP ${response.status}: ${detail}`);
       }
 

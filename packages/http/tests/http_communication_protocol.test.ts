@@ -84,6 +84,19 @@ beforeAll(async () => {
     res.status(422).json({ error: { code: "INVALID_FIELD", reason: "value out of range" } });
   });
 
+  // A refusal with no body at all: the message must still carry a reason.
+  app.post("/forbidden-empty", (req, res) => {
+    res.status(403).end();
+  });
+
+  // A refusal with a huge body (think an HTML stack trace): messages stay bounded.
+  app.post("/forbidden-huge", (req, res) => {
+    res.status(403).type("text/plain").send("x".repeat(5000));
+  });
+  app.get("/forbidden-huge", (req, res) => {
+    res.status(403).type("text/plain").send("x".repeat(5000));
+  });
+
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => {
       serverPort = (server.address() as any).port;
@@ -296,5 +309,51 @@ describe("discovery error body (streamable_http + sse)", () => {
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
     expect(result.errors[0]).toContain("403");
+  });
+});
+
+describe("error body edge cases", () => {
+  const callForbidden = async (path: string) => {
+    const protocol = new HttpCommunicationProtocol();
+    try {
+      await protocol.callTool(mockClient, "test.forbidden", {}, {
+        name: "forbidden_server",
+        call_template_type: "http",
+        url: `http://localhost:${serverPort}${path}`,
+        http_method: "POST",
+      } as any);
+    } catch (e) {
+      return e as any;
+    }
+    throw new Error("expected the call to fail");
+  };
+
+  test("a blank error body falls back to the status text instead of a bare colon", async () => {
+    const thrown = await callForbidden("/forbidden-empty");
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown.status).toBe(403);
+    expect(thrown.message).toContain("403");
+    expect(thrown.message).toContain("Forbidden");
+    expect(thrown.message.trimEnd().endsWith(":")).toBe(false);
+  });
+
+  test("a huge error body is truncated in the message but kept in full on data", async () => {
+    const thrown = await callForbidden("/forbidden-huge");
+    expect(thrown.status).toBe(403);
+    expect(thrown.message.length).toBeLessThan(2500);
+    expect(thrown.data).toHaveLength(5000);
+  });
+
+  test("a huge discovery error body is truncated in errors[]", async () => {
+    const protocol = new StreamableHttpCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "huge_stream",
+      call_template_type: "streamable_http",
+      url: `http://localhost:${serverPort}/forbidden-huge`,
+      http_method: "GET",
+    } as any);
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain("403");
+    expect(result.errors[0].length).toBeLessThan(400);
   });
 });
