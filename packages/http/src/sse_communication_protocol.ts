@@ -28,6 +28,17 @@ interface SseEvent {
 }
 
 /**
+ * The server violated the SSE wire format. Not a connection loss, so it is
+ * never retried.
+ */
+export class SseProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SseProtocolError';
+  }
+}
+
+/**
  * REQUIRED
  * SSE communication protocol implementation for UTCP client.
  *
@@ -45,6 +56,23 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
    * Keeps a tool call bounded even if the server keeps dropping the connection.
    */
   public static readonly MAX_RECONNECT_ATTEMPTS = 5;
+  /**
+   * Cap on the delay before a reconnect, whatever `retry_timeout` or a
+   * server-sent `retry:` field asks for. Together with MAX_RECONNECT_ATTEMPTS
+   * this bounds the total time a call can spend waiting to reconnect.
+   */
+  public static readonly MAX_RECONNECT_DELAY_MS = 60_000;
+  /**
+   * Time allowed for the SSE handshake, i.e. until response headers arrive.
+   * Reading the body is unbounded: an SSE stream may legitimately stay quiet.
+   */
+  public static readonly HANDSHAKE_TIMEOUT_MS = 30_000;
+  /**
+   * Largest partial event the parser buffers (in UTF-16 code units) before
+   * declaring the stream malformed. Guards against a server that streams
+   * data without ever sending the blank-line event delimiter.
+   */
+  public static readonly MAX_EVENT_BUFFER_CHARS = 16 * 1024 * 1024;
 
   private oauthTokens: Map<string, { access_token: string; expires_at?: number }> = new Map();
 
@@ -132,7 +160,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
     }
 
     if (provider.auth && 'token_url' in provider.auth) {
-      const token = await this._handleOAuth2(provider.auth as OAuth2Auth);
+      const token = await this._handleOAuth2(provider.auth as OAuth2Auth, SseCommunicationProtocol.HANDSHAKE_TIMEOUT_MS);
       headers['Authorization'] = `Bearer ${token}`;
     }
   }
@@ -326,7 +354,13 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         attemptHeaders['Last-Event-ID'] = lastEventId;
       }
 
+      const delayMs = () => Math.min(retryDelayMs, SseCommunicationProtocol.MAX_RECONNECT_DELAY_MS);
+
       let response: Response;
+      // Bound the handshake only: the signal is dropped once headers arrive,
+      // so a quiet stream is never cut off.
+      const handshake = new AbortController();
+      const handshakeTimer = setTimeout(() => handshake.abort(), SseCommunicationProtocol.HANDSHAKE_TIMEOUT_MS);
       try {
         // ``redirect: 'error'`` -- see registerManual for rationale (GHSA-9qhg-99ww-9mqc).
         // ``keepalive: false`` -- do not take a pooled socket for the stream. Bun's
@@ -340,6 +374,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
           body,
           redirect: 'error',
           keepalive: false,
+          signal: handshake.signal,
         });
 
         if (!response.ok) {
@@ -352,10 +387,27 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
           throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ` - ${detail.slice(0, 200)}` : ''}`);
         }
       } catch (error: any) {
-        // Failing to establish the connection (or a non-2xx status) is a
-        // definitive answer, not a connection loss: fail fast, no retry.
-        this._logError(`Error establishing SSE connection to '${providerName}': ${error.message}`);
-        throw error;
+        if (reconnectAttempts === 0) {
+          // The initial handshake failing (refused, timed out, non-2xx) is a
+          // definitive answer about the endpoint: fail fast, no retry.
+          this._logError(`Error establishing SSE connection to '${providerName}': ${error.message}`);
+          throw error;
+        }
+        // A reconnect handshake failing is part of the outage we are riding
+        // out (the server may still be restarting): count it and try again.
+        reconnectAttempts += 1;
+        if (reconnectAttempts > SseCommunicationProtocol.MAX_RECONNECT_ATTEMPTS) {
+          this._logError(`SSE reconnect to '${providerName}' failed and attempts are exhausted: ${error.message}`);
+          throw error;
+        }
+        this._logInfo(
+          `SSE reconnect to '${providerName}' failed (${error.message}); retrying in ${delayMs()} ms ` +
+          `(attempt ${reconnectAttempts}/${SseCommunicationProtocol.MAX_RECONNECT_ATTEMPTS})`
+        );
+        await new Promise<void>(resolve => setTimeout(resolve, delayMs()));
+        continue;
+      } finally {
+        clearTimeout(handshakeTimer);
       }
 
       try {
@@ -377,18 +429,23 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         // The server ended the stream cleanly: the tool call is complete.
         return;
       } catch (error: any) {
+        if (error instanceof SseProtocolError) {
+          // A malformed stream is the server's doing, not a connection loss.
+          this._logError(`Malformed SSE stream from '${providerName}': ${error.message}`);
+          throw error;
+        }
         reconnectAttempts += 1;
         if (!reconnect || reconnectAttempts > SseCommunicationProtocol.MAX_RECONNECT_ATTEMPTS) {
           this._logError(`SSE connection to '${providerName}' lost and not reconnecting: ${error.message}`);
           throw error;
         }
         this._logInfo(
-          `SSE connection to '${providerName}' lost (${error.message}); reconnecting in ${retryDelayMs} ms ` +
+          `SSE connection to '${providerName}' lost (${error.message}); reconnecting in ${delayMs()} ms ` +
           `(attempt ${reconnectAttempts}/${SseCommunicationProtocol.MAX_RECONNECT_ATTEMPTS})`
         );
       }
 
-      await new Promise<void>(resolve => setTimeout(resolve, retryDelayMs));
+      await new Promise<void>(resolve => setTimeout(resolve, delayMs()));
     }
   }
 
@@ -418,13 +475,29 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
     const reader = body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
+    // A "\r" that ended the previous chunk is held back until the next chunk
+    // shows whether a "\n" follows; otherwise a CRLF split across two reads
+    // would become two LFs and dispatch an event early.
+    let pendingCr = false;
+    const normalise = (chunk: string): string => {
+      let text = chunk;
+      if (pendingCr) {
+        text = '\r' + text;
+        pendingCr = false;
+      }
+      if (text.endsWith('\r')) {
+        text = text.slice(0, -1);
+        pendingCr = true;
+      }
+      // Normalise CRLF / CR line endings to LF so the event delimiter is always "\n\n".
+      return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    };
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        // Normalise CRLF / CR line endings to LF so the event delimiter is always "\n\n".
-        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        buffer += normalise(decoder.decode(value, { stream: true }));
 
         let delimiterIndex: number;
         while ((delimiterIndex = buffer.indexOf('\n\n')) >= 0) {
@@ -435,10 +508,19 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
             yield event;
           }
         }
+
+        if (buffer.length > SseCommunicationProtocol.MAX_EVENT_BUFFER_CHARS) {
+          throw new SseProtocolError(
+            `SSE event exceeded ${SseCommunicationProtocol.MAX_EVENT_BUFFER_CHARS} characters without a blank-line delimiter`
+          );
+        }
       }
 
       // Flush a trailing event that was not terminated by a blank line.
-      buffer += decoder.decode();
+      buffer += normalise(decoder.decode());
+      if (pendingCr) {
+        buffer += '\n';
+      }
       const trailing = this._parseSseEvent(buffer);
       if (trailing) {
         yield trailing;
@@ -506,47 +588,64 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
 
   /**
    * Handles the OAuth2 client-credentials flow, trying credentials in the body
-   * first and then as a Basic Auth header. Tokens are cached per client_id.
+   * first and then as a Basic Auth header. Tokens are cached per full OAuth
+   * configuration (token URL, client id, secret, scope), never per client_id
+   * alone: two templates may share a client_id but point at different issuers.
+   * Each token request is bounded by `timeoutMs` so a stalled token endpoint
+   * cannot hang the tool call before its own timeout even starts.
    */
-  private async _handleOAuth2(authDetails: OAuth2Auth): Promise<string> {
+  private async _handleOAuth2(authDetails: OAuth2Auth, timeoutMs: number): Promise<string> {
     const clientId = authDetails.client_id;
-    const cached = this.oauthTokens.get(clientId);
+
+    // The token URL may come from an untrusted call template; validate it
+    // before the cache is consulted, so a template with a rejected URL never
+    // receives a token fetched on behalf of another (GHSA-8cp3-qxj6-px34).
+    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
+
+    const cacheKey = JSON.stringify([authDetails.token_url, clientId, authDetails.client_secret, authDetails.scope || '']);
+    const cached = this.oauthTokens.get(cacheKey);
     if (cached && (cached.expires_at === undefined || cached.expires_at > Date.now())) {
       return cached.access_token;
     }
-
-    // The token URL may come from an untrusted call template; validate it
-    // before posting credentials (GHSA-8cp3-qxj6-px34).
-    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
 
     const storeToken = (tokenData: any): string => {
       if (!tokenData || !tokenData.access_token) {
         throw new Error('Access token not found in response.');
       }
       const expiresIn = typeof tokenData.expires_in === 'number' ? tokenData.expires_in : 3600;
-      this.oauthTokens.set(clientId, { access_token: tokenData.access_token, expires_at: Date.now() + expiresIn * 1000 });
+      this.oauthTokens.set(cacheKey, { access_token: tokenData.access_token, expires_at: Date.now() + expiresIn * 1000 });
       return tokenData.access_token;
+    };
+
+    const requestToken = async (headers: Record<string, string>, form: Record<string, string>): Promise<string> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(authDetails.token_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+          body: new URLSearchParams(form).toString(),
+          redirect: 'error',
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        return storeToken(await response.json());
+      } finally {
+        clearTimeout(timer);
+      }
     };
 
     // Method 1: credentials in the request body
     try {
       this._logInfo(`Attempting OAuth2 token fetch for '${clientId}' with credentials in body.`);
-      const bodyData = new URLSearchParams({
+      return await requestToken({}, {
         grant_type: 'client_credentials',
         client_id: clientId,
         client_secret: authDetails.client_secret,
         scope: authDetails.scope || '',
       });
-      const response = await fetch(authDetails.token_url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: bodyData.toString(),
-        redirect: 'error',
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      return storeToken(await response.json());
     } catch (error: any) {
       this._logError(`OAuth2 with credentials in body failed for '${clientId}': ${error.message}. Trying Basic Auth header.`);
     }
@@ -554,24 +653,11 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
     // Method 2: credentials as a Basic Auth header
     try {
       this._logInfo(`Attempting OAuth2 token fetch for '${clientId}' with Basic Auth header.`);
-      const bodyData = new URLSearchParams({
+      const credentials = Buffer.from(`${clientId}:${authDetails.client_secret}`).toString('base64');
+      return await requestToken({ 'Authorization': `Basic ${credentials}` }, {
         grant_type: 'client_credentials',
         scope: authDetails.scope || '',
       });
-      const credentials = Buffer.from(`${clientId}:${authDetails.client_secret}`).toString('base64');
-      const response = await fetch(authDetails.token_url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${credentials}`,
-        },
-        body: bodyData.toString(),
-        redirect: 'error',
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      return storeToken(await response.json());
     } catch (error: any) {
       this._logError(`OAuth2 with Basic Auth header also failed for '${clientId}': ${error.message}`);
       throw new Error(`Failed to fetch OAuth2 token for client '${clientId}' after trying all methods. Details: ${error.message}`);
@@ -584,20 +670,26 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
    */
   private _buildUrlWithPathParams(urlTemplate: string, args: Record<string, any>): string {
     let url = urlTemplate;
-    const pathParams = urlTemplate.match(/\{([^}]+)\}/g) || [];
+    // Both the `{param}` form from the spec and the `${param}` form the
+    // package README documents.
+    const placeholders = urlTemplate.match(/\$?\{([^}]+)\}/g) || [];
+    const paramNames = Array.from(new Set(
+      placeholders.map(p => (p.startsWith('${') ? p.slice(2, -1) : p.slice(1, -1)))
+    ));
 
-    for (const param of pathParams) {
-      const paramName = param.slice(1, -1);
-      if (paramName in args) {
-        // URL-encode the parameter value to prevent path injection
-        url = url.replace(param, encodeURIComponent(String(args[paramName])));
-        delete args[paramName];
-      } else {
+    for (const paramName of paramNames) {
+      if (!(paramName in args)) {
         throw new Error(`Missing required path parameter: ${paramName}`);
       }
+      // URL-encode the value to prevent path injection, and replace every
+      // occurrence of either form (a template may repeat a parameter).
+      // `${x}` goes first so that replacing `{x}` never leaves a stray `$`.
+      const value = encodeURIComponent(String(args[paramName]));
+      url = url.split('${' + paramName + '}').join(value).split('{' + paramName + '}').join(value);
+      delete args[paramName];
     }
 
-    const remainingParams = url.match(/\{([^}]+)\}/g);
+    const remainingParams = url.match(/\$?\{([^}]+)\}/g);
     if (remainingParams && remainingParams.length > 0) {
       throw new Error(`Missing required path parameters in URL template: ${remainingParams.join(', ')}`);
     }

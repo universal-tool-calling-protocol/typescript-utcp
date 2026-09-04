@@ -132,7 +132,7 @@ Automatically converts OpenAPI specifications to UTCP tools:
 
 **SSE**
 - ✅ Real-time event streaming
-- ✅ Automatic reconnection (resumes with `Last-Event-ID`, at most 5 reconnects per call; a clean end of stream completes the call and initial connection/HTTP errors fail immediately)
+- ✅ Automatic reconnection (resumes with `Last-Event-ID`, at most 5 reconnects per call with the delay capped at 60 s; a failed reconnect handshake counts as an attempt; a clean end of stream completes the call and initial connection/HTTP errors fail immediately; the handshake is limited to 30 s)
 - ✅ Event type filtering
 - ✅ Server push updates
 - ❌ Unidirectional (server → client only)

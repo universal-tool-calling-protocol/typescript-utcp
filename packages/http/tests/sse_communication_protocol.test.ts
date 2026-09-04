@@ -3,7 +3,7 @@ import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import express, { Express } from 'express';
 import { Server } from 'http';
 // Import from package index to trigger auto-registration
-import { SseCommunicationProtocol, SseCallTemplate } from "@utcp/http";
+import { SseCommunicationProtocol, SseCallTemplate, SseProtocolError } from "@utcp/http";
 import { IUtcpClient } from "@utcp/sdk";
 
 // --- Test Server Setup ---
@@ -19,6 +19,10 @@ function resetFlaky(alwaysDrop = false) {
   flaky.lastEventIds = [];
   flaky.alwaysDrop = alwaysDrop;
 }
+const flaky503 = { connections: 0 };
+const hugeRetry = { connections: 0 };
+// Responses deliberately left without headers; ended by the test that opened them.
+const hanging: express.Response[] = [];
 
 function sseHeaders(res: express.Response) {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -112,6 +116,67 @@ beforeAll(async () => {
     }
     res.write("id: 2\ndata: {\"seq\":2}\n\n");
     res.write("id: 3\ndata: {\"seq\":3}\n\n");
+    res.end();
+  });
+
+  // One multi-line CRLF event whose CRLF is split across two writes.
+  app.get("/events-crlf-split", (req, res) => {
+    sseHeaders(res);
+    res.write("data: line1\r");
+    setTimeout(() => {
+      res.write("\ndata: line2\r\n\r\n");
+      res.end();
+    }, 50);
+  });
+
+  // Streams data lines without ever sending the blank-line delimiter.
+  app.get("/events-no-delimiter", (req, res) => {
+    sseHeaders(res);
+    for (let i = 0; i < 20; i++) {
+      res.write("data: " + "x".repeat(500) + "\n");
+    }
+    res.end();
+  });
+
+  // Drops after the first event, answers the first reconnect with a 503,
+  // then serves the rest on the second reconnect.
+  app.get("/flaky-503", (req, res) => {
+    flaky503.connections += 1;
+    if (flaky503.connections === 2) {
+      res.status(503).send("restarting");
+      return;
+    }
+    sseHeaders(res);
+    if (flaky503.connections === 1) {
+      res.write("id: 1\ndata: {\"seq\":1}\n\n");
+      setTimeout(() => req.socket.destroy(), 10);
+      return;
+    }
+    res.write("id: 2\ndata: {\"seq\":2}\n\nid: 3\ndata: {\"seq\":3}\n\n");
+    res.end();
+  });
+
+  // Accepts the connection but never sends response headers.
+  app.get("/never-responds", (req, res) => {
+    hanging.push(res);
+  });
+
+  // First connection asks for a 100 s retry delay, then drops.
+  app.get("/huge-retry", (req, res) => {
+    hugeRetry.connections += 1;
+    sseHeaders(res);
+    if (hugeRetry.connections === 1) {
+      res.write("id: 1\nretry: 100000\ndata: {\"seq\":1}\n\n");
+      setTimeout(() => req.socket.destroy(), 10);
+      return;
+    }
+    res.write("id: 2\ndata: {\"seq\":2}\n\n");
+    res.end();
+  });
+
+  app.get("/pair/:a/:b", (req, res) => {
+    sseHeaders(res);
+    res.write(`data: ${JSON.stringify(req.params)}\n\n`);
     res.end();
   });
 
@@ -255,6 +320,79 @@ describe("SseCommunicationProtocol", () => {
       }));
       await expect(gen).rejects.toBeDefined();
       expect(flaky.connections).toBe(1 + SseCommunicationProtocol.MAX_RECONNECT_ATTEMPTS);
+    });
+  });
+
+  describe("framing robustness and bounded reconnects", () => {
+    test("a CRLF split across chunks does not end the event early", async () => {
+      const result = await protocol.callTool(mockClient, "sse_server.t", {}, template({ url: `http://localhost:${serverPort}/events-crlf-split` }));
+      expect(result).toEqual(["line1\nline2"]);
+    });
+
+    test("a stream that never sends the event delimiter is rejected, not buffered forever", async () => {
+      const original = SseCommunicationProtocol.MAX_EVENT_BUFFER_CHARS;
+      (SseCommunicationProtocol as any).MAX_EVENT_BUFFER_CHARS = 1000;
+      try {
+        const call = protocol.callTool(mockClient, "sse_server.t", {}, template({
+          url: `http://localhost:${serverPort}/events-no-delimiter`,
+          reconnect: true,
+          retry_timeout: 1,
+        }));
+        await expect(call).rejects.toBeInstanceOf(SseProtocolError);
+      } finally {
+        (SseCommunicationProtocol as any).MAX_EVENT_BUFFER_CHARS = original;
+      }
+    });
+
+    test("a failed reconnect handshake is retried, unlike the initial handshake", async () => {
+      flaky503.connections = 0;
+      const result = await protocol.callTool(mockClient, "sse_server.t", {}, template({
+        url: `http://localhost:${serverPort}/flaky-503`,
+        reconnect: true,
+        retry_timeout: 10,
+      }));
+      expect(result).toEqual([{ seq: 1 }, { seq: 2 }, { seq: 3 }]);
+      expect(flaky503.connections).toBe(3);
+    });
+
+    test("a server that accepts the connection but never sends headers cannot hang the call", async () => {
+      const original = SseCommunicationProtocol.HANDSHAKE_TIMEOUT_MS;
+      (SseCommunicationProtocol as any).HANDSHAKE_TIMEOUT_MS = 300;
+      try {
+        const started = Date.now();
+        const call = protocol.callTool(mockClient, "sse_server.t", {}, template({ url: `http://localhost:${serverPort}/never-responds` }));
+        await expect(call).rejects.toBeDefined();
+        expect(Date.now() - started).toBeLessThan(3000);
+      } finally {
+        (SseCommunicationProtocol as any).HANDSHAKE_TIMEOUT_MS = original;
+        for (const r of hanging.splice(0)) r.end();
+      }
+    });
+
+    test("a server-sent retry of 100 s cannot stall the reconnect past MAX_RECONNECT_DELAY_MS", async () => {
+      const original = SseCommunicationProtocol.MAX_RECONNECT_DELAY_MS;
+      (SseCommunicationProtocol as any).MAX_RECONNECT_DELAY_MS = 50;
+      hugeRetry.connections = 0;
+      try {
+        const started = Date.now();
+        const result = await protocol.callTool(mockClient, "sse_server.t", {}, template({
+          url: `http://localhost:${serverPort}/huge-retry`,
+          reconnect: true,
+          retry_timeout: 10,
+        }));
+        expect(result).toEqual([{ seq: 1 }, { seq: 2 }]);
+        expect(hugeRetry.connections).toBe(2);
+        expect(Date.now() - started).toBeLessThan(3000);
+      } finally {
+        (SseCommunicationProtocol as any).MAX_RECONNECT_DELAY_MS = original;
+      }
+    });
+
+    test("repeated and ${param}-style path parameters are all substituted", async () => {
+      const result = await protocol.callTool(mockClient, "sse_server.t", { id: "x" }, template({
+        url: `http://localhost:${serverPort}/pair/{id}/\${id}`,
+      }));
+      expect(result).toEqual([{ a: "x", b: "x" }]);
     });
   });
 });

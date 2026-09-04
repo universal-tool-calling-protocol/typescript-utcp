@@ -114,7 +114,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     }
 
     if (provider.auth && 'token_url' in provider.auth) {
-      const token = await this._handleOAuth2(provider.auth as OAuth2Auth);
+      const token = await this._handleOAuth2(provider.auth as OAuth2Auth, provider.timeout || 60000);
       headers['Authorization'] = `Bearer ${token}`;
     }
   }
@@ -266,6 +266,15 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     if (provider.body_field && provider.body_field in remainingArgs) {
       bodyContent = remainingArgs[provider.body_field];
       delete remainingArgs[provider.body_field];
+    }
+
+    if (bodyContent !== undefined && (provider.http_method || 'GET').toUpperCase() === 'GET') {
+      // fetch() rejects a GET with a body before anything reaches the server;
+      // surface the misconfiguration as a clear error instead.
+      throw new Error(
+        `Tool '${toolName}': body_field '${provider.body_field}' was supplied but http_method is GET, ` +
+        `which cannot carry a request body. Set http_method to POST.`
+      );
     }
 
     // Build the URL with path parameters substituted
@@ -437,47 +446,64 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
 
   /**
    * Handles the OAuth2 client-credentials flow, trying credentials in the body
-   * first and then as a Basic Auth header. Tokens are cached per client_id.
+   * first and then as a Basic Auth header. Tokens are cached per full OAuth
+   * configuration (token URL, client id, secret, scope), never per client_id
+   * alone: two templates may share a client_id but point at different issuers.
+   * Each token request is bounded by `timeoutMs` so a stalled token endpoint
+   * cannot hang the tool call before its own timeout even starts.
    */
-  private async _handleOAuth2(authDetails: OAuth2Auth): Promise<string> {
+  private async _handleOAuth2(authDetails: OAuth2Auth, timeoutMs: number): Promise<string> {
     const clientId = authDetails.client_id;
-    const cached = this.oauthTokens.get(clientId);
+
+    // The token URL may come from an untrusted call template; validate it
+    // before the cache is consulted, so a template with a rejected URL never
+    // receives a token fetched on behalf of another (GHSA-8cp3-qxj6-px34).
+    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
+
+    const cacheKey = JSON.stringify([authDetails.token_url, clientId, authDetails.client_secret, authDetails.scope || '']);
+    const cached = this.oauthTokens.get(cacheKey);
     if (cached && (cached.expires_at === undefined || cached.expires_at > Date.now())) {
       return cached.access_token;
     }
-
-    // The token URL may come from an untrusted call template; validate it
-    // before posting credentials (GHSA-8cp3-qxj6-px34).
-    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
 
     const storeToken = (tokenData: any): string => {
       if (!tokenData || !tokenData.access_token) {
         throw new Error('Access token not found in response.');
       }
       const expiresIn = typeof tokenData.expires_in === 'number' ? tokenData.expires_in : 3600;
-      this.oauthTokens.set(clientId, { access_token: tokenData.access_token, expires_at: Date.now() + expiresIn * 1000 });
+      this.oauthTokens.set(cacheKey, { access_token: tokenData.access_token, expires_at: Date.now() + expiresIn * 1000 });
       return tokenData.access_token;
+    };
+
+    const requestToken = async (headers: Record<string, string>, form: Record<string, string>): Promise<string> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(authDetails.token_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+          body: new URLSearchParams(form).toString(),
+          redirect: 'error',
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        return storeToken(await response.json());
+      } finally {
+        clearTimeout(timer);
+      }
     };
 
     // Method 1: credentials in the request body
     try {
       this._logInfo(`Attempting OAuth2 token fetch for '${clientId}' with credentials in body.`);
-      const bodyData = new URLSearchParams({
+      return await requestToken({}, {
         grant_type: 'client_credentials',
         client_id: clientId,
         client_secret: authDetails.client_secret,
         scope: authDetails.scope || '',
       });
-      const response = await fetch(authDetails.token_url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: bodyData.toString(),
-        redirect: 'error',
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      return storeToken(await response.json());
     } catch (error: any) {
       this._logError(`OAuth2 with credentials in body failed for '${clientId}': ${error.message}. Trying Basic Auth header.`);
     }
@@ -485,24 +511,11 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     // Method 2: credentials as a Basic Auth header
     try {
       this._logInfo(`Attempting OAuth2 token fetch for '${clientId}' with Basic Auth header.`);
-      const bodyData = new URLSearchParams({
+      const credentials = Buffer.from(`${clientId}:${authDetails.client_secret}`).toString('base64');
+      return await requestToken({ 'Authorization': `Basic ${credentials}` }, {
         grant_type: 'client_credentials',
         scope: authDetails.scope || '',
       });
-      const credentials = Buffer.from(`${clientId}:${authDetails.client_secret}`).toString('base64');
-      const response = await fetch(authDetails.token_url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${credentials}`,
-        },
-        body: bodyData.toString(),
-        redirect: 'error',
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      return storeToken(await response.json());
     } catch (error: any) {
       this._logError(`OAuth2 with Basic Auth header also failed for '${clientId}': ${error.message}`);
       throw new Error(`Failed to fetch OAuth2 token for client '${clientId}' after trying all methods. Details: ${error.message}`);
@@ -515,20 +528,26 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
    */
   private _buildUrlWithPathParams(urlTemplate: string, args: Record<string, any>): string {
     let url = urlTemplate;
-    const pathParams = urlTemplate.match(/\{([^}]+)\}/g) || [];
+    // Both the `{param}` form from the spec and the `${param}` form the
+    // package README documents.
+    const placeholders = urlTemplate.match(/\$?\{([^}]+)\}/g) || [];
+    const paramNames = Array.from(new Set(
+      placeholders.map(p => (p.startsWith('${') ? p.slice(2, -1) : p.slice(1, -1)))
+    ));
 
-    for (const param of pathParams) {
-      const paramName = param.slice(1, -1);
-      if (paramName in args) {
-        // URL-encode the parameter value to prevent path injection
-        url = url.replace(param, encodeURIComponent(String(args[paramName])));
-        delete args[paramName];
-      } else {
+    for (const paramName of paramNames) {
+      if (!(paramName in args)) {
         throw new Error(`Missing required path parameter: ${paramName}`);
       }
+      // URL-encode the value to prevent path injection, and replace every
+      // occurrence of either form (a template may repeat a parameter).
+      // `${x}` goes first so that replacing `{x}` never leaves a stray `$`.
+      const value = encodeURIComponent(String(args[paramName]));
+      url = url.split('${' + paramName + '}').join(value).split('{' + paramName + '}').join(value);
+      delete args[paramName];
     }
 
-    const remainingParams = url.match(/\{([^}]+)\}/g);
+    const remainingParams = url.match(/\$?\{([^}]+)\}/g);
     if (remainingParams && remainingParams.length > 0) {
       throw new Error(`Missing required path parameters in URL template: ${remainingParams.join(', ')}`);
     }

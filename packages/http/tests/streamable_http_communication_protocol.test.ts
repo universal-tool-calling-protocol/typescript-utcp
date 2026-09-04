@@ -14,6 +14,9 @@ let serverPort: number;
 const mockClient = {} as IUtcpClient;
 
 const BINARY_PAYLOAD = Buffer.alloc(10_000, 7); // 10,000 bytes of 0x07
+const tokenHits = { a: 0, b: 0 };
+// Token responses deliberately left unanswered; ended by the test that opened them.
+const hangingToken: express.Response[] = [];
 
 beforeAll(async () => {
   app = express();
@@ -85,6 +88,28 @@ beforeAll(async () => {
 
   app.get("/error", (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
+  });
+
+  app.post("/token-a", (req, res) => {
+    tokenHits.a += 1;
+    res.json({ access_token: "token-a", expires_in: 3600 });
+  });
+  app.post("/token-b", (req, res) => {
+    tokenHits.b += 1;
+    res.json({ access_token: "token-b", expires_in: 3600 });
+  });
+  app.post("/token-hang", (req, res) => {
+    hangingToken.push(res);
+  });
+  app.get("/whoami", (req, res) => {
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.write(JSON.stringify({ auth: req.headers.authorization ?? null }) + "\n");
+    res.end();
+  });
+  app.get("/pair/:a/:b", (req, res) => {
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.write(JSON.stringify(req.params) + "\n");
+    res.end();
   });
 
   await new Promise<void>((resolve) => {
@@ -202,5 +227,56 @@ describe("StreamableHttpCommunicationProtocol", () => {
   test("wrong call template type is rejected", async () => {
     const gen = protocol.callToolStreaming(mockClient, "x", {}, { name: "x", call_template_type: "http" } as any);
     await expect(gen.next()).rejects.toThrow(/StreamableHttpCallTemplate/);
+  });
+
+  describe("review follow-ups", () => {
+    test("GET with a body_field fails with a clear error instead of a fetch TypeError", async () => {
+      const gen = protocol.callToolStreaming(mockClient, "stream_server.t", { payload: { n: 1 } }, template({
+        url: `http://localhost:${serverPort}/ndjson`,
+        http_method: "GET",
+        body_field: "payload",
+      }));
+      await expect(gen.next()).rejects.toThrow(/http_method is GET/);
+    });
+
+    test("OAuth2 tokens are cached per token endpoint, not per client_id", async () => {
+      tokenHits.a = 0;
+      tokenHits.b = 0;
+      const oauth = (tokenUrl: string) => ({
+        auth_type: "oauth2",
+        token_url: tokenUrl,
+        client_id: "shared-id",
+        client_secret: "s",
+      } as any);
+      const whoami = (tokenUrl: string) =>
+        protocol.callTool(mockClient, "stream_server.t", {}, template({ url: `http://localhost:${serverPort}/whoami`, auth: oauth(tokenUrl) }));
+
+      expect(await whoami(`http://localhost:${serverPort}/token-a`)).toEqual([{ auth: "Bearer token-a" }]);
+      expect(await whoami(`http://localhost:${serverPort}/token-b`)).toEqual([{ auth: "Bearer token-b" }]);
+      expect(await whoami(`http://localhost:${serverPort}/token-a`)).toEqual([{ auth: "Bearer token-a" }]);
+      expect(tokenHits).toEqual({ a: 1, b: 1 });
+    });
+
+    test("a stalled OAuth2 token endpoint is bounded by the call timeout", async () => {
+      const started = Date.now();
+      const call = protocol.callTool(mockClient, "stream_server.t", {}, template({
+        url: `http://localhost:${serverPort}/whoami`,
+        timeout: 300,
+        auth: { auth_type: "oauth2", token_url: `http://localhost:${serverPort}/token-hang`, client_id: "c", client_secret: "s" } as any,
+      }));
+      try {
+        await expect(call).rejects.toThrow(/Failed to fetch OAuth2 token/);
+        expect(Date.now() - started).toBeLessThan(3000);
+      } finally {
+        for (const r of hangingToken.splice(0)) r.end();
+      }
+    });
+
+    test("repeated and ${param}-style path parameters are all substituted", async () => {
+      const result = await protocol.callTool(mockClient, "stream_server.t", { id: "x" }, template({
+        url: `http://localhost:${serverPort}/pair/{id}/\${id}`,
+      }));
+      expect(result).toEqual([{ a: "x", b: "x" }]);
+    });
   });
 });
