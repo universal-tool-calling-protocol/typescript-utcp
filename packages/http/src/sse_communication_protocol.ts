@@ -15,7 +15,7 @@ import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { SseCallTemplate, SseCallTemplateSchema } from './sse_call_template';
 import { ensureSecureUrl, assertNoCrlf } from './_security';
-import { truncateByCodePoint } from './_text';
+import { readErrorDetail } from './_text';
 import { buildUrlWithPathParams } from './_url';
 
 /**
@@ -220,11 +220,8 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         // Read the body before throwing — servers put the real reason there
         // (e.g. { "error": "..." }); discarding it leaves callers with only a
         // status code. Fall back to statusText when the body is empty.
-        const body = await response.text().catch(() => '');
-        // Truncate like the streaming path does, so a huge error page does
-        // not land in errors[] and logs in full. By code point, so a
-        // multi-byte character on the boundary cannot leave a lone surrogate.
-        const detail = truncateByCodePoint(body.trim(), 200) || response.statusText;
+        // Bounded read, control characters collapsed, truncated by code point.
+        const detail = (await readErrorDetail(response, 200)) || response.statusText;
         throw new Error(`HTTP ${response.status}: ${detail}`);
       }
 
@@ -362,19 +359,27 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
       }
     }
 
-    this._logInfo(`Executing SSE tool '${toolName}' with URL: ${urlObj.toString()} and method: ${method}`);
+    // Log without the query string: an API key with location 'query', or any
+    // sensitive tool argument, would otherwise land in the logs.
+    this._logInfo(`Executing SSE tool '${toolName}' with URL: ${urlObj.origin}${urlObj.pathname} and method: ${method}`);
 
     const providerName = provider.name || toolName;
     const eventType = provider.event_type ?? undefined;
-    const reconnect = provider.reconnect !== false;
+    // Never re-send a request body: a reconnect re-issues the request, and for
+    // a POST that would re-execute a possibly non-idempotent tool.
+    const reconnect = provider.reconnect !== false && bodyContent === undefined;
+    if (provider.reconnect !== false && bodyContent !== undefined) {
+      this._logInfo(`Reconnection is disabled for '${providerName}' because the call sends a request body.`);
+    }
     let retryDelayMs = provider.retry_timeout;
     let lastEventId: string | undefined;
     let reconnectAttempts = 0;
 
     while (true) {
       const attemptHeaders: Record<string, string> = { ...requestHeaders };
-      if (lastEventId !== undefined) {
-        // Let the server resume from where we left off (SSE spec).
+      if (lastEventId) {
+        // Let the server resume from where we left off (SSE spec). An empty
+        // last event ID means "none": the header is not sent.
         attemptHeaders['Last-Event-ID'] = lastEventId;
       }
 
@@ -402,15 +407,27 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         });
 
         if (!response.ok) {
-          let detail = '';
+          const detail = await readErrorDetail(response, 200);
+          throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ` - ${detail}` : ''}`);
+        }
+
+        // Anything but an event stream would be parsed into silence: a JSON
+        // error document, say, yields zero events and a "successful" call.
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.toLowerCase().includes('text/event-stream')) {
           try {
-            detail = await response.text();
+            await response.body?.cancel();
           } catch {
-            // ignore body read failures on error responses
+            // ignore
           }
-          throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ` - ${detail.slice(0, 200)}` : ''}`);
+          throw new SseProtocolError(
+            `Expected a text/event-stream response but got '${contentType || 'no Content-Type'}'`
+          );
         }
       } catch (error: any) {
+        if (error instanceof SseProtocolError) {
+          throw error;
+        }
         if (reconnectAttempts === 0) {
           // The initial handshake failing (refused, timed out, non-2xx) is a
           // definitive answer about the endpoint: fail fast, no retry.
@@ -436,7 +453,9 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
 
       try {
         for await (const event of this._iterSseEvents(response)) {
-          if (event.id !== undefined) {
+          // Per the SSE spec an id containing NUL is ignored, and an empty id
+          // resets the last event ID.
+          if (event.id !== undefined && !event.id.includes('\0')) {
             lastEventId = event.id;
           }
           if (event.retry !== undefined) {
@@ -445,7 +464,8 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
           if (event.data === undefined) {
             continue;
           }
-          if (eventType && event.event !== eventType) {
+          // An event block without an `event:` field has the type "message".
+          if (eventType && (event.event || 'message') !== eventType) {
             continue;
           }
           yield this._parseEventData(event.data);
@@ -695,7 +715,8 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
 
   /**
    * REQUIRED
-   * Close all active connections and clear internal state.
+   * Clear cached OAuth2 tokens. Streams in flight are owned by their
+   * consumers and end when the consumer stops iterating or the server closes.
    */
   async close(): Promise<void> {
     this._logInfo('Closing SseCommunicationProtocol.');

@@ -15,7 +15,7 @@ import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { StreamableHttpCallTemplate, StreamableHttpCallTemplateSchema } from './streamable_http_call_template';
 import { ensureSecureUrl, assertNoCrlf } from './_security';
-import { truncateByCodePoint } from './_text';
+import { readErrorDetail } from './_text';
 import { buildUrlWithPathParams } from './_url';
 
 /**
@@ -30,6 +30,13 @@ import { buildUrlWithPathParams } from './_url';
  *   - application/octet-stream and anything else: Buffer chunks of at most chunk_size bytes
  */
 export class StreamableHttpCommunicationProtocol implements CommunicationProtocol {
+  /**
+   * Largest NDJSON line the parser buffers (in UTF-16 code units) before
+   * declaring the stream malformed. Guards against a server that streams
+   * bytes without ever sending a newline.
+   */
+  public static readonly MAX_LINE_CHARS = 16 * 1024 * 1024;
+
   private oauthTokens: Map<string, { access_token: string; expires_at?: number }> = new Map();
 
   private _logInfo(message: string): void {
@@ -173,11 +180,8 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
           // Read the body before throwing: servers put the real reason there
           // (e.g. { "error": "..." }); discarding it leaves callers with only a
           // status code. Fall back to statusText when the body is empty.
-          const body = await response.text().catch(() => '');
-          // Truncate like the streaming path does, so a huge error page does
-          // not land in errors[] and logs in full. By code point, so a
-          // multi-byte character on the boundary cannot leave a lone surrogate.
-          const detail = truncateByCodePoint(body.trim(), 200) || response.statusText;
+          // Bounded read, control characters collapsed, truncated by code point.
+          const detail = (await readErrorDetail(response, 200)) || response.statusText;
           throw new Error(`HTTP ${response.status}: ${detail}`);
         }
 
@@ -336,7 +340,9 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
         }
       }
 
-      this._logInfo(`Executing streaming HTTP tool '${toolName}' with URL: ${urlObj.toString()} and method: ${provider.http_method}`);
+      // Log without the query string: an API key with location 'query', or any
+      // sensitive tool argument, would otherwise land in the logs.
+      this._logInfo(`Executing streaming HTTP tool '${toolName}' with URL: ${urlObj.origin}${urlObj.pathname} and method: ${provider.http_method}`);
 
       // ``redirect: 'error'`` -- see registerManual for rationale (GHSA-9qhg-99ww-9mqc).
       // ``keepalive: false`` -- do not take a pooled socket for the stream. Bun's
@@ -353,13 +359,8 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
       });
 
       if (!response.ok) {
-        let detail = '';
-        try {
-          detail = await response.text();
-        } catch {
-          // ignore body read failures on error responses
-        }
-        throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ` - ${detail.slice(0, 200)}` : ''}`);
+        const detail = await readErrorDetail(response, 200);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ` - ${detail}` : ''}`);
       }
 
       for await (const chunk of this._processHttpStream(response, provider.chunk_size, provider.name || toolName)) {
@@ -413,6 +414,13 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
             if (line.trim()) {
               yield parseLine(line);
             }
+          }
+          if (buffer.length > StreamableHttpCommunicationProtocol.MAX_LINE_CHARS) {
+            // A server that never sends a newline must not grow memory until
+            // the call deadline; mirrors the SSE event buffer cap.
+            throw new Error(
+              `NDJSON line exceeded ${StreamableHttpCommunicationProtocol.MAX_LINE_CHARS} characters without a newline`
+            );
           }
         }
         buffer += decoder.decode();
@@ -550,7 +558,9 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
 
   /**
    * REQUIRED
-   * Close all active connections and clear internal state.
+   * Clear cached OAuth2 tokens. Streams in flight are owned by their
+   * consumers and end when the consumer stops iterating, the call deadline
+   * fires, or the server closes.
    */
   async close(): Promise<void> {
     this._logInfo('Closing StreamableHttpCommunicationProtocol.');

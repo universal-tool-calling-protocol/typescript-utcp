@@ -14,7 +14,7 @@ import { IUtcpClient } from '@utcp/sdk';
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
 import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf } from './_security';
-import { truncateByCodePoint } from './_text';
+import { truncateByCodePoint, collapseControlChars } from './_text';
 import { buildUrlWithPathParams } from './_url';
 
 /**
@@ -128,7 +128,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         manualCallTemplate: httpCallTemplate,
         manual: UtcpManualSchema.parse({ tools: [] }),
         success: false,
-        errors: [axios.isAxiosError(error) ? error.message : String(error)]
+        errors: [this._normalizeToolError(httpCallTemplate.name ?? '', error, `discovering tools from '${httpCallTemplate.name}'`).message]
       };
     }
   }
@@ -243,7 +243,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
    * `status` / `data` fields, so the reason survives both `.message` readers and
    * structured serialization. Non-HTTP errors (network, timeout) pass through.
    */
-  private _normalizeToolError(toolName: string, error: any): Error {
+  private _normalizeToolError(toolName: string, error: any, context: string = `calling tool '${toolName}'`): Error {
     if (!axios.isAxiosError(error) || !error.response) {
       return error instanceof Error ? error : new Error(String(error));
     }
@@ -277,13 +277,20 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
           : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
     // Truncate by code point, not UTF-16 unit, so a multi-byte character on
     // the boundary is dropped whole rather than leaving a lone surrogate.
-    const detail = truncateByCodePoint(rawDetail, MAX_DETAIL_CHARS);
+    const detail = truncateByCodePoint(collapseControlChars(rawDetail), MAX_DETAIL_CHARS);
     const normalized = new Error(
-      `HTTP ${status} calling tool '${toolName}': ${detail}`,
+      `HTTP ${status} ${context}: ${detail}`,
     ) as Error & { status: number; data: unknown };
     // Enumerable so they survive JSON.stringify out of an isolated-vm runner.
     normalized.status = status;
     normalized.data = data;
+    // Keep the original axios error reachable for callers that inspect
+    // err.response.headers (Retry-After, say), err.code or err.cause, but
+    // non-enumerable so the large, circular response object stays out of
+    // structured serialization.
+    for (const [key, value] of Object.entries({ cause: error, response: error.response, code: error.code })) {
+      Object.defineProperty(normalized, key, { value, enumerable: false, writable: true, configurable: true });
+    }
     return normalized;
   }
 
@@ -401,19 +408,20 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     // Cache per full OAuth configuration, never per client_id alone: two
     // templates may share a client_id but point at different issuers, scopes
     // or secrets, and must not receive each other's tokens.
+    // The token URL ultimately comes from a call template, and call
+    // templates can be sourced from attacker-controlled OpenAPI specs
+    // (the OpenApiConverter copies ``tokenUrl`` from the spec).
+    // Validate it before posting credentials, and before the cache is
+    // consulted, so a malicious spec cannot redirect ``client_id`` /
+    // ``client_secret`` exfiltration through this protocol nor receive a
+    // token fetched on behalf of another template -- see GHSA-8cp3-qxj6-px34.
+    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
+
     const cacheKey = JSON.stringify([authDetails.token_url, clientId, authDetails.client_secret, authDetails.scope || '']);
     const cachedToken = this._oauthTokens.get(cacheKey);
     if (cachedToken && cachedToken.expiresAt > Date.now()) {
       return cachedToken.accessToken;
     }
-
-    // The token URL ultimately comes from a call template, and call
-    // templates can be sourced from attacker-controlled OpenAPI specs
-    // (the OpenApiConverter copies ``tokenUrl`` from the spec).
-    // Validate it before posting credentials so a malicious spec
-    // cannot redirect ``client_id`` / ``client_secret`` exfiltration
-    // through this protocol -- see GHSA-8cp3-qxj6-px34.
-    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
 
     this._logInfo(`Fetching new OAuth2 token for client: '${clientId}'`);
     const tokenFetchPromises: Promise<string>[] = [];

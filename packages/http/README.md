@@ -44,7 +44,7 @@ interface StreamableHttpCallTemplate {
   http_method: 'GET' | 'POST';
   content_type?: string;
   chunk_size?: number;        // Default: 4096 bytes
-  timeout?: number;           // Default: 60000ms
+  timeout?: number;           // Default: 60000ms. One deadline for the whole call: token fetch, request and stream
   headers?: Record<string, string>;
   body_field?: string;
   header_fields?: string[];
@@ -61,7 +61,7 @@ interface SseCallTemplate {
   name: string;
   call_template_type: 'sse';
   url: string;
-  event_type?: string;        // Filter specific event types
+  event_type?: string;        // Filter specific event types; events without an `event:` field have the type "message"
   reconnect?: boolean;        // Auto-reconnect if an established stream drops (default: true)
   retry_timeout?: number;     // Delay before reconnecting (ms, default: 30000); a server "retry:" field overrides it
   headers?: Record<string, string>;
@@ -132,7 +132,7 @@ Automatically converts OpenAPI specifications to UTCP tools:
 
 **SSE**
 - ✅ Real-time event streaming
-- ✅ Automatic reconnection (resumes with `Last-Event-ID`, at most 5 reconnects per call with the delay capped at 60 s; a failed reconnect handshake counts as an attempt; a clean end of stream completes the call and initial connection/HTTP errors fail immediately; the handshake is limited to 30 s)
+- ✅ Automatic reconnection for GET streams (resumes with `Last-Event-ID`, at most 5 reconnects per call with the delay capped at 60 s; a failed reconnect handshake counts as an attempt; a clean end of stream completes the call and initial connection/HTTP errors fail immediately; the handshake is limited to 30 s). Calls that send a request body (`body_field`) are never re-issued, since that could re-execute a non-idempotent tool
 - ✅ Event type filtering
 - ✅ Server push updates
 - ❌ Unidirectional (server → client only)

@@ -112,6 +112,15 @@ beforeAll(async () => {
     res.end();
   });
 
+  // NDJSON that never sends a newline.
+  app.get("/ndjson-no-newline", (req, res) => {
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    for (let i = 0; i < 20; i++) {
+      res.write("x".repeat(500));
+    }
+    res.end();
+  });
+
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => {
       serverPort = (server.address() as any).port;
@@ -288,6 +297,17 @@ describe("StreamableHttpCommunicationProtocol", () => {
         url: `http://localhost:${serverPort}/pair/{id}/\${id}`,
       }));
       expect(result).toEqual([{ a: "x", b: "x" }]);
+    });
+
+    test("an NDJSON line that never ends is rejected instead of buffered until the deadline", async () => {
+      const original = StreamableHttpCommunicationProtocol.MAX_LINE_CHARS;
+      (StreamableHttpCommunicationProtocol as any).MAX_LINE_CHARS = 1000;
+      try {
+        const call = protocol.callTool(mockClient, "stream_server.t", {}, template({ url: `http://localhost:${serverPort}/ndjson-no-newline` }));
+        await expect(call).rejects.toThrow(/NDJSON line exceeded/);
+      } finally {
+        (StreamableHttpCommunicationProtocol as any).MAX_LINE_CHARS = original;
+      }
     });
   });
 });
