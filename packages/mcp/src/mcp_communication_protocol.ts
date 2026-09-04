@@ -173,8 +173,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
         return schema as JsonSchema;
       }
       
-      // Dereference the schema (inlines all $refs and $defs)
-      const dereferenced = await $RefParser.dereference(schema as any);
+      // Dereference the schema (inlines all $refs and $defs). `circular:
+      // 'ignore'` keeps recursive schemas (e.g. self-referencing filter
+      // grammars) from throwing — the cycle is left as a live reference
+      // instead of failing the whole tool discovery.
+      const dereferenced = await $RefParser.dereference(schema as any, {
+        dereference: { circular: 'ignore' },
+      });
       return dereferenced as JsonSchema;
     } catch (error: any) {
       // If dereferencing fails, log a warning and return the original schema
@@ -273,6 +278,12 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
         args: stdioConfig.args || [],
         cwd: stdioConfig.cwd,
         env: combinedEnv,
+        // Default the child's stderr to 'ignore' so a chatty MCP server does
+        // not flood the host terminal during discovery. NOT 'pipe': with no
+        // reader attached the OS pipe buffer fills and a verbose child
+        // deadlocks. Set UTCP_MCP_CHILD_STDERR=inherit to see child stderr
+        // when debugging.
+        stderr: process.env.UTCP_MCP_CHILD_STDERR === 'inherit' ? 'inherit' : 'ignore',
       });
 
     } else if (serverConfig.transport === 'http') {
@@ -353,6 +364,20 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     } catch (e: any) {
       // If connection fails, don't cache the broken client
       this._logError(`Failed to connect MCP client for '${sessionKey}':`, e.message);
+      // Only hint when the child actually failed to start. A close() that
+      // raced with this connect throws our own shutdown error above, and
+      // that is not something stderr would explain.
+      if (
+        serverConfig.transport === 'stdio' &&
+        process.env.UTCP_MCP_CHILD_STDERR !== 'inherit' &&
+        this._activeDrains === 0 &&
+        this._closeGeneration === closeGenerationAtStart
+      ) {
+        this._logError(
+          `The child's stderr was suppressed. Re-run with UTCP_MCP_CHILD_STDERR=inherit ` +
+          `to see what '${sessionKey}' printed while starting.`,
+        );
+      }
       throw e;
     }
     
@@ -672,8 +697,15 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   
   private _processMcpToolResult(result: any): any {
     if (result && typeof result === 'object') {
-      if ('structured_output' in result) {
-        return result.structured_output;
+      // Prefer `structuredContent` (MCP spec field) whenever the server sent
+      // it. Spec-compliant servers also mirror it as a serialized text block
+      // in `content` for older clients, and re-parsing that text is lossy: a
+      // numeric-looking string becomes a number, unparsable JSON stays a
+      // string. Using the structured payload directly also covers servers
+      // that return an empty `content` array with only `structuredContent`,
+      // which previously collapsed to []. Matches the Python SDK.
+      if (result.structuredContent != null) {
+        return this._unwrapStructuredContent(result.structuredContent);
       }
       if (Array.isArray(result.content)) {
         const processedList = result.content.map((item: any) => {
@@ -686,6 +718,34 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       }
     }
     return result;
+  }
+
+  /**
+   * FastMCP-style servers wrap NON-OBJECT tool returns (primitives, arrays,
+   * null) as `{ result: value }` so that `structuredContent` is always an
+   * object; object returns are sent as-is. Unwrap exactly that shape: a
+   * single `result` key whose value is not a plain object. A single-key
+   * `{ result: { ... } }` is therefore a genuine object return and passes
+   * through untouched, as does any object with other keys. A genuine
+   * `{ result: <primitive or array> }` return is indistinguishable from the
+   * wrapper on the wire and is unwrapped too; that ambiguity is inherent to
+   * the FastMCP convention.
+   */
+  private _unwrapStructuredContent(structured: any): any {
+    if (
+      structured &&
+      typeof structured === 'object' &&
+      !Array.isArray(structured) &&
+      Object.keys(structured).length === 1 &&
+      'result' in structured
+    ) {
+      const inner = structured.result;
+      const innerIsPlainObject = inner !== null && typeof inner === 'object' && !Array.isArray(inner);
+      if (!innerIsPlainObject) {
+        return inner;
+      }
+    }
+    return structured;
   }
 
   private _parseTextContent(text: string): any {
