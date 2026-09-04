@@ -1,6 +1,6 @@
 /**
  * Streamable HTTP Communication Protocol for UTCP.
- * 
+ *
  * Handles HTTP streaming with chunked transfer encoding for real-time data.
  */
 // packages/http/src/streamable_http_communication_protocol.ts
@@ -13,14 +13,19 @@ import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
-import { StreamableHttpCallTemplate } from './streamable_http_call_template';
+import { StreamableHttpCallTemplate, StreamableHttpCallTemplateSchema } from './streamable_http_call_template';
 import { ensureSecureUrl, assertNoCrlf } from './_security';
 
 /**
  * REQUIRED
  * Streamable HTTP communication protocol implementation for UTCP client.
- * 
+ *
  * Handles HTTP streaming with chunked transfer encoding for real-time data.
+ *
+ * Chunks are yielded according to the response Content-Type:
+ *   - application/x-ndjson: one parsed JSON value per line (raw line on parse error)
+ *   - application/json: the whole body buffered and parsed as a single JSON value
+ *   - application/octet-stream and anything else: Buffer chunks of at most chunk_size bytes
  */
 export class StreamableHttpCommunicationProtocol implements CommunicationProtocol {
   private oauthTokens: Map<string, { access_token: string; expires_at?: number }> = new Map();
@@ -86,6 +91,35 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
   }
 
   /**
+   * Applies Basic auth, cookies and (if configured) an OAuth2 client-credentials
+   * bearer token to the request headers.
+   */
+  private async _finalizeAuthHeaders(
+    provider: StreamableHttpCallTemplate,
+    headers: Record<string, string>,
+    auth: { username: string; password: string } | undefined,
+    cookies: Record<string, string>,
+  ): Promise<void> {
+    if (auth) {
+      const credentials = Buffer.from(`${auth.username}:${auth.password}`).toString('base64');
+      headers['Authorization'] = `Basic ${credentials}`;
+    }
+
+    if (Object.keys(cookies).length > 0) {
+      const cookieHeader = Object.entries(cookies)
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ');
+      assertNoCrlf(cookieHeader, 'Cookie');
+      headers['Cookie'] = headers['Cookie'] ? `${headers['Cookie']}; ${cookieHeader}` : cookieHeader;
+    }
+
+    if (provider.auth && 'token_url' in provider.auth) {
+      const token = await this._handleOAuth2(provider.auth as OAuth2Auth);
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+  }
+
+  /**
    * REQUIRED
    * Register a manual and its tools from a StreamableHttp provider.
    */
@@ -97,7 +131,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
       throw new Error('StreamableHttpCommunicationProtocol can only be used with StreamableHttpCallTemplate');
     }
 
-    const provider = manualCallTemplate as StreamableHttpCallTemplate;
+    const provider = StreamableHttpCallTemplateSchema.parse(manualCallTemplate);
     const url = provider.url;
 
     // Security check: only HTTPS or loopback HTTP allowed for manual discovery.
@@ -109,6 +143,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
       const requestHeaders: Record<string, string> = provider.headers ? { ...provider.headers } : {};
       const queryParams: Record<string, any> = {};
       const { auth, cookies } = this._applyAuth(provider, requestHeaders, queryParams);
+      await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies);
 
       // Build URL with query parameters
       const urlObj = new URL(url);
@@ -116,45 +151,38 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
         urlObj.searchParams.append(key, String(value));
       });
 
-      // Build fetch options. ``redirect: 'error'`` refuses to follow
-      // 3xx responses -- streaming handshakes shouldn't redirect, and
-      // doing so silently would let an attacker-controlled endpoint
-      // steer the stream into an internal service
-      // (GHSA-9qhg-99ww-9mqc).
-      const fetchOptions: RequestInit = {
-        method: provider.http_method || 'GET',
-        headers: requestHeaders,
-        redirect: 'error',
-      };
+      // ``redirect: 'error'`` refuses to follow 3xx responses -- streaming
+      // handshakes shouldn't redirect, and doing so silently would let an
+      // attacker-controlled endpoint steer the stream into an internal
+      // service (GHSA-9qhg-99ww-9mqc).
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), provider.timeout || 60000);
+      try {
+        const response = await fetch(urlObj.toString(), {
+          method: provider.http_method || 'GET',
+          headers: requestHeaders,
+          redirect: 'error',
+          signal: controller.signal,
+        });
 
-      // Add basic auth if present
-      if (auth) {
-        const credentials = Buffer.from(`${auth.username}:${auth.password}`).toString('base64');
-        fetchOptions.headers = {
-          ...fetchOptions.headers as Record<string, string>,
-          'Authorization': `Basic ${credentials}`,
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const responseText = await response.text();
+        const utcpManual = new UtcpManualSerializer().validateDict(JSON.parse(responseText));
+
+        this._logInfo(`Discovered ${utcpManual.tools.length} tools from '${provider.name}'`);
+
+        return {
+          manualCallTemplate: provider,
+          manual: utcpManual,
+          success: true,
+          errors: [],
         };
+      } finally {
+        clearTimeout(timer);
       }
-
-      // Make discovery request
-      const response = await fetch(urlObj.toString(), fetchOptions);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      // Read response body
-      const responseText = await response.text();
-      const utcpManual = new UtcpManualSerializer().validateDict(JSON.parse(responseText));
-
-      this._logInfo(`Discovered ${utcpManual.tools.length} tools from '${provider.name}'`);
-
-      return {
-        manualCallTemplate: provider,
-        manual: utcpManual,
-        success: true,
-        errors: [],
-      };
     } catch (error: any) {
       this._logError(`Error discovering tools from '${provider.name}': ${error.message}`);
       return {
@@ -177,6 +205,10 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
   /**
    * REQUIRED
    * Call a tool using HTTP (non-streaming).
+   *
+   * Collects every chunk produced by callToolStreaming. Binary chunks are
+   * concatenated into a single Buffer; parsed (JSON / NDJSON) chunks are
+   * returned as an array, mirroring the Python implementation.
    */
   async callTool(
     caller: IUtcpClient,
@@ -184,12 +216,19 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     toolArgs: Record<string, any>,
     toolCallTemplate: CallTemplate
   ): Promise<any> {
-    // For streamable HTTP, we collect all chunks and return the complete result
-    const chunks: string[] = [];
+    const binaryChunks: Buffer[] = [];
+    const parsedChunks: any[] = [];
     for await (const chunk of this.callToolStreaming(caller, toolName, toolArgs, toolCallTemplate)) {
-      chunks.push(chunk);
+      if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) {
+        binaryChunks.push(Buffer.from(chunk));
+      } else {
+        parsedChunks.push(chunk);
+      }
     }
-    return chunks.join('');
+    if (binaryChunks.length > 0) {
+      return Buffer.concat(binaryChunks);
+    }
+    return parsedChunks;
   }
 
   /**
@@ -203,14 +242,298 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     toolArgs: Record<string, any>,
     toolCallTemplate: CallTemplate
   ): AsyncGenerator<any, void, unknown> {
-    const provider = toolCallTemplate as StreamableHttpCallTemplate;
+    if ((toolCallTemplate as any).call_template_type !== 'streamable_http') {
+      throw new Error('StreamableHttpCommunicationProtocol can only be used with StreamableHttpCallTemplate');
+    }
+    const provider = StreamableHttpCallTemplateSchema.parse(toolCallTemplate);
 
-    // TODO: Implement actual streaming call logic
-    // This would involve making an HTTP request and streaming the response in chunks
-    this._logInfo(`Calling streaming tool '${toolName}' with args: ${JSON.stringify(toolArgs)}`);
-    
-    // Placeholder implementation
-    yield `Streaming response for tool: ${toolName}`;
+    const requestHeaders: Record<string, string> = provider.headers ? { ...provider.headers } : {};
+    let bodyContent: any = undefined;
+    const remainingArgs: Record<string, any> = { ...toolArgs };
+
+    if (provider.header_fields) {
+      for (const fieldName of provider.header_fields) {
+        if (fieldName in remainingArgs) {
+          assertNoCrlf(fieldName, 'header field name');
+          const value = String(remainingArgs[fieldName]);
+          assertNoCrlf(value, `header field '${fieldName}'`);
+          requestHeaders[fieldName] = value;
+          delete remainingArgs[fieldName];
+        }
+      }
+    }
+
+    if (provider.body_field && provider.body_field in remainingArgs) {
+      bodyContent = remainingArgs[provider.body_field];
+      delete remainingArgs[provider.body_field];
+    }
+
+    // Build the URL with path parameters substituted
+    const url = this._buildUrlWithPathParams(provider.url, remainingArgs);
+
+    // Security check: re-validate the resolved URL before each invocation.
+    ensureSecureUrl(url, 'tool invocation');
+
+    // The rest of the arguments are query parameters
+    const queryParams: Record<string, any> = { ...remainingArgs };
+
+    // Handle authentication
+    const { auth, cookies } = this._applyAuth(provider, requestHeaders, queryParams);
+    await this._finalizeAuthHeaders(provider, requestHeaders, auth, cookies);
+
+    const urlObj = new URL(url);
+    Object.entries(queryParams).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      urlObj.searchParams.append(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+    });
+
+    let body: BodyInit | undefined = undefined;
+    if (bodyContent !== undefined) {
+      const hasContentType = Object.keys(requestHeaders).some(h => h.toLowerCase() === 'content-type');
+      if (!hasContentType) {
+        requestHeaders['Content-Type'] = provider.content_type;
+      }
+      const contentType = Object.entries(requestHeaders).find(([h]) => h.toLowerCase() === 'content-type')?.[1] || '';
+      if (contentType.includes('application/json')) {
+        body = JSON.stringify(bodyContent);
+      } else if (typeof bodyContent === 'string' || bodyContent instanceof Uint8Array || bodyContent instanceof ArrayBuffer) {
+        body = bodyContent as BodyInit;
+      } else {
+        body = JSON.stringify(bodyContent);
+      }
+    }
+
+    this._logInfo(`Executing streaming HTTP tool '${toolName}' with URL: ${urlObj.toString()} and method: ${provider.http_method}`);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), provider.timeout || 60000);
+    try {
+      // ``redirect: 'error'`` -- see registerManual for rationale (GHSA-9qhg-99ww-9mqc).
+      // ``keepalive: false`` -- do not take a pooled socket for the stream. Bun's
+      // fetch transparently re-issues a request when a reused keep-alive socket
+      // dies mid-response, which would hand the consumer the partial chunks
+      // followed by a full replay. Node ignores the option.
+      const response = await fetch(urlObj.toString(), {
+        method: provider.http_method || 'GET',
+        headers: requestHeaders,
+        body,
+        redirect: 'error',
+        signal: controller.signal,
+        keepalive: false,
+      });
+
+      if (!response.ok) {
+        let detail = '';
+        try {
+          detail = await response.text();
+        } catch {
+          // ignore body read failures on error responses
+        }
+        throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ` - ${detail.slice(0, 200)}` : ''}`);
+      }
+
+      for await (const chunk of this._processHttpStream(response, provider.chunk_size, provider.name || toolName)) {
+        yield chunk;
+      }
+    } catch (error: any) {
+      this._logError(`Error during HTTP stream for '${provider.name || toolName}': ${error.message}`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Processes the HTTP response body and yields chunks based on content type.
+   */
+  private async *_processHttpStream(
+    response: Response,
+    chunkSize: number | undefined,
+    providerName: string,
+  ): AsyncGenerator<any, void, unknown> {
+    const contentType = response.headers.get('content-type') || '';
+    const body = response.body;
+
+    if (!body) {
+      // No body (e.g. 204). Nothing to yield.
+      return;
+    }
+
+    const reader = body.getReader();
+    try {
+      if (contentType.includes('application/x-ndjson')) {
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        const parseLine = (line: string): any => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            this._logError(`Error parsing NDJSON line for '${providerName}': ${line.slice(0, 100)}`);
+            return line; // Yield raw line on error
+          }
+        };
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let newlineIndex: number;
+          while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, newlineIndex).replace(/\r$/, '');
+            buffer = buffer.slice(newlineIndex + 1);
+            if (line.trim()) {
+              yield parseLine(line);
+            }
+          }
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          yield parseLine(buffer.replace(/\r$/, ''));
+        }
+      } else if (contentType.includes('application/json')) {
+        // Buffer the entire response for a single JSON object
+        const parts: Buffer[] = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          parts.push(Buffer.from(value));
+        }
+        const buffer = Buffer.concat(parts);
+        if (buffer.length > 0) {
+          const text = buffer.toString('utf-8');
+          try {
+            yield JSON.parse(text);
+          } catch {
+            this._logError(`Error parsing JSON response for '${providerName}': ${text.slice(0, 100)}`);
+            yield buffer; // Yield raw buffer on error
+          }
+        }
+      } else {
+        // Binary chunk streaming for application/octet-stream and unknown content types.
+        // Re-chunk the network reads so each yielded Buffer is at most chunkSize bytes.
+        const size = chunkSize && chunkSize > 0 ? chunkSize : 8192;
+        let pending = Buffer.alloc(0);
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          pending = pending.length === 0 ? Buffer.from(value) : Buffer.concat([pending, Buffer.from(value)]);
+          while (pending.length >= size) {
+            yield pending.subarray(0, size);
+            pending = pending.subarray(size);
+          }
+        }
+        if (pending.length > 0) {
+          yield pending;
+        }
+      }
+    } finally {
+      // Release the connection if the consumer stopped early or an error occurred.
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /**
+   * Handles the OAuth2 client-credentials flow, trying credentials in the body
+   * first and then as a Basic Auth header. Tokens are cached per client_id.
+   */
+  private async _handleOAuth2(authDetails: OAuth2Auth): Promise<string> {
+    const clientId = authDetails.client_id;
+    const cached = this.oauthTokens.get(clientId);
+    if (cached && (cached.expires_at === undefined || cached.expires_at > Date.now())) {
+      return cached.access_token;
+    }
+
+    // The token URL may come from an untrusted call template; validate it
+    // before posting credentials (GHSA-8cp3-qxj6-px34).
+    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
+
+    const storeToken = (tokenData: any): string => {
+      if (!tokenData || !tokenData.access_token) {
+        throw new Error('Access token not found in response.');
+      }
+      const expiresIn = typeof tokenData.expires_in === 'number' ? tokenData.expires_in : 3600;
+      this.oauthTokens.set(clientId, { access_token: tokenData.access_token, expires_at: Date.now() + expiresIn * 1000 });
+      return tokenData.access_token;
+    };
+
+    // Method 1: credentials in the request body
+    try {
+      this._logInfo(`Attempting OAuth2 token fetch for '${clientId}' with credentials in body.`);
+      const bodyData = new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: clientId,
+        client_secret: authDetails.client_secret,
+        scope: authDetails.scope || '',
+      });
+      const response = await fetch(authDetails.token_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: bodyData.toString(),
+        redirect: 'error',
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      return storeToken(await response.json());
+    } catch (error: any) {
+      this._logError(`OAuth2 with credentials in body failed for '${clientId}': ${error.message}. Trying Basic Auth header.`);
+    }
+
+    // Method 2: credentials as a Basic Auth header
+    try {
+      this._logInfo(`Attempting OAuth2 token fetch for '${clientId}' with Basic Auth header.`);
+      const bodyData = new URLSearchParams({
+        grant_type: 'client_credentials',
+        scope: authDetails.scope || '',
+      });
+      const credentials = Buffer.from(`${clientId}:${authDetails.client_secret}`).toString('base64');
+      const response = await fetch(authDetails.token_url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${credentials}`,
+        },
+        body: bodyData.toString(),
+        redirect: 'error',
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      return storeToken(await response.json());
+    } catch (error: any) {
+      this._logError(`OAuth2 with Basic Auth header also failed for '${clientId}': ${error.message}`);
+      throw new Error(`Failed to fetch OAuth2 token for client '${clientId}' after trying all methods. Details: ${error.message}`);
+    }
+  }
+
+  /**
+   * Builds the URL by substituting {param} path parameters from args.
+   * Consumed parameters are removed from args so they are not sent as query parameters.
+   */
+  private _buildUrlWithPathParams(urlTemplate: string, args: Record<string, any>): string {
+    let url = urlTemplate;
+    const pathParams = urlTemplate.match(/\{([^}]+)\}/g) || [];
+
+    for (const param of pathParams) {
+      const paramName = param.slice(1, -1);
+      if (paramName in args) {
+        // URL-encode the parameter value to prevent path injection
+        url = url.replace(param, encodeURIComponent(String(args[paramName])));
+        delete args[paramName];
+      } else {
+        throw new Error(`Missing required path parameter: ${paramName}`);
+      }
+    }
+
+    const remainingParams = url.match(/\{([^}]+)\}/g);
+    if (remainingParams && remainingParams.length > 0) {
+      throw new Error(`Missing required path parameters in URL template: ${remainingParams.join(', ')}`);
+    }
+
+    return url;
   }
 
   /**

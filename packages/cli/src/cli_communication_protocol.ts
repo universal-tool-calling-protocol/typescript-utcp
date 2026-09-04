@@ -757,12 +757,15 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
 
   /**
    * REQUIRED
-   * Streaming calls are not supported for the CLI protocol.
+   * Execute a tool call through the CLI transport streamingly.
    *
-   * @throws Error Always, as this functionality is not supported.
+   * The CLI protocol does not natively support streaming, so the command is
+   * executed to completion and the full result is yielded as a single chunk.
    */
   public async *callToolStreaming(caller: IUtcpClient, toolName: string, toolArgs: Record<string, any>, toolCallTemplate: CallTemplate): AsyncGenerator<any, void, unknown> {
-    throw new Error('Streaming is not supported by the CLI communication protocol.');
+    this._log_info(`CLI protocol does not inherently support streaming for '${toolName}'. Fetching full response as a single chunk.`);
+    const result = await this.callTool(caller, toolName, toolArgs, toolCallTemplate);
+    yield result;
   }
 
   public async close(): Promise<void> {

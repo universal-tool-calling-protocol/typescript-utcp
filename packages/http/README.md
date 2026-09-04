@@ -62,8 +62,8 @@ interface SseCallTemplate {
   call_template_type: 'sse';
   url: string;
   event_type?: string;        // Filter specific event types
-  reconnect?: boolean;        // Auto-reconnect on disconnect
-  retry_timeout?: number;     // Reconnection timeout (ms)
+  reconnect?: boolean;        // Auto-reconnect if an established stream drops (default: true)
+  retry_timeout?: number;     // Delay before reconnecting (ms, default: 30000); a server "retry:" field overrides it
   headers?: Record<string, string>;
   body_field?: string;
   header_fields?: string[];
@@ -132,7 +132,7 @@ Automatically converts OpenAPI specifications to UTCP tools:
 
 **SSE**
 - ✅ Real-time event streaming
-- ✅ Automatic reconnection
+- ✅ Automatic reconnection (resumes with `Last-Event-ID`, at most 5 reconnects per call; a clean end of stream completes the call and initial connection/HTTP errors fail immediately)
 - ✅ Event type filtering
 - ✅ Server push updates
 - ❌ Unidirectional (server → client only)
