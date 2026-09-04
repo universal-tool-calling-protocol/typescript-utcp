@@ -525,6 +525,13 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
           yield event;
         }
       }
+      // The residual (discarded) buffer is still subject to the cap, so an
+      // over-limit malformed stream fails the same way at end of stream.
+      if (buffer.length > SseCommunicationProtocol.MAX_EVENT_BUFFER_CHARS) {
+        throw new SseProtocolError(
+          `SSE event exceeded ${SseCommunicationProtocol.MAX_EVENT_BUFFER_CHARS} characters without a blank-line delimiter`
+        );
+      }
     } finally {
       // Release the connection if the consumer stopped early or an error occurred.
       try {
