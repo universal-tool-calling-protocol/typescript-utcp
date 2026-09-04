@@ -364,6 +364,12 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     } catch (e: any) {
       // If connection fails, don't cache the broken client
       this._logError(`Failed to connect MCP client for '${sessionKey}':`, e.message);
+      if (serverConfig.transport === 'stdio' && process.env.UTCP_MCP_CHILD_STDERR !== 'inherit') {
+        this._logError(
+          `The child's stderr was suppressed. Re-run with UTCP_MCP_CHILD_STDERR=inherit ` +
+          `to see what '${sessionKey}' printed while starting.`,
+        );
+      }
       throw e;
     }
     
@@ -683,15 +689,15 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   
   private _processMcpToolResult(result: any): any {
     if (result && typeof result === 'object') {
-      if ('structured_output' in result) {
-        return result.structured_output;
-      }
-      // MCP servers may return only `structuredContent` (spec field) with an
-      // empty `content` array — without this fallback such results collapse
-      // to [] and the payload is silently lost.
-      const hasContent = Array.isArray(result.content) && result.content.length > 0;
-      if (!hasContent && result.structuredContent != null) {
-        return result.structuredContent;
+      // Prefer `structuredContent` (MCP spec field) whenever the server sent
+      // it. Spec-compliant servers also mirror it as a serialized text block
+      // in `content` for older clients, and re-parsing that text is lossy: a
+      // numeric-looking string becomes a number, unparsable JSON stays a
+      // string. Using the structured payload directly also covers servers
+      // that return an empty `content` array with only `structuredContent`,
+      // which previously collapsed to []. Matches the Python SDK.
+      if (result.structuredContent != null) {
+        return this._unwrapStructuredContent(result.structuredContent);
       }
       if (Array.isArray(result.content)) {
         const processedList = result.content.map((item: any) => {
@@ -704,6 +710,25 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       }
     }
     return result;
+  }
+
+  /**
+   * FastMCP-style servers wrap non-object tool returns as `{ result: value }`
+   * so that `structuredContent` is always an object. Unwrap exactly that
+   * single-key shape; an object that merely has a `result` key among others
+   * is a genuine object return and is passed through untouched.
+   */
+  private _unwrapStructuredContent(structured: any): any {
+    if (
+      structured &&
+      typeof structured === 'object' &&
+      !Array.isArray(structured) &&
+      Object.keys(structured).length === 1 &&
+      'result' in structured
+    ) {
+      return structured.result;
+    }
+    return structured;
   }
 
   private _parseTextContent(text: string): any {

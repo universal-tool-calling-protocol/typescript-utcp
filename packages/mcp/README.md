@@ -155,6 +155,16 @@ const client = await UtcpClient.create(process.cwd(), {
 });
 ```
 
+### Child Process stderr
+
+Stdio MCP servers often write banners, telemetry notices and auth chatter to stderr, multiplied by every server you federate. `@utcp/mcp` therefore discards the child's stderr by default. To see it while debugging a server that fails to start, opt back in for the host process:
+
+```bash
+UTCP_MCP_CHILD_STDERR=inherit node your-app.js
+```
+
+Any other value, or leaving the variable unset, keeps stderr suppressed. When a stdio server fails to connect, the error log reminds you of this switch.
+
 ### HTTP Server Configuration
 
 HTTP-based MCP servers support additional configuration options:

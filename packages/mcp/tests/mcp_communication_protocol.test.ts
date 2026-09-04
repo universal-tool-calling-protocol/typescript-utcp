@@ -713,4 +713,77 @@ describe("McpCommunicationProtocol", () => {
       expect(capturedOpts[1]).toEqual({ method: "callTool", opts: { timeout: 90_000 } });
     });
   });
+
+  describe("Tool result processing", () => {
+    const protocol = new McpCommunicationProtocol();
+    const processResult = (r: any) => (protocol as any)._processMcpToolResult(r);
+
+    test("prefers structuredContent over the mirrored text block", () => {
+      const result = {
+        content: [{ type: "text", text: '{"answer": 42}' }],
+        structuredContent: { answer: 42 },
+      };
+      expect(processResult(result)).toEqual({ answer: 42 });
+    });
+
+    test("returns structuredContent when content is empty instead of collapsing to []", () => {
+      expect(processResult({ content: [], structuredContent: { answer: 42 } })).toEqual({ answer: 42 });
+    });
+
+    test("unwraps a FastMCP-style single-key {result} wrapper", () => {
+      expect(processResult({ content: [{ type: "text", text: "42" }], structuredContent: { result: 42 } })).toBe(42);
+    });
+
+    test("does not unwrap an object that merely has a result key among others", () => {
+      const structured = { result: 1, extra: 2 };
+      expect(processResult({ content: [], structuredContent: structured })).toEqual(structured);
+    });
+
+    test("falls back to parsing text content when structuredContent is absent", () => {
+      expect(processResult({ content: [{ type: "text", text: '{"a": 1}' }] })).toEqual({ a: 1 });
+      expect(processResult({ content: [{ type: "text", text: "7" }] })).toBe(7);
+      expect(processResult({ content: [] })).toEqual([]);
+    });
+  });
+
+  describe("Schema dereferencing", () => {
+    const protocol = new McpCommunicationProtocol();
+    const deref = (s: any) => (protocol as any)._dereferenceSchema(s);
+
+    test("a circular schema dereferences into something JSON-serializable", async () => {
+      const schema = {
+        type: "object",
+        properties: { root: { $ref: "#/$defs/node" } },
+        $defs: {
+          node: {
+            type: "object",
+            properties: {
+              value: { type: "string" },
+              next: { $ref: "#/$defs/node" },
+            },
+          },
+        },
+      };
+      const out = await deref(schema);
+      // With the default `circular: true` this is a live object cycle and
+      // stringify throws; with `circular: 'ignore'` every $ref on the cycle
+      // stays a $ref string, which serializes fine.
+      expect(() => JSON.stringify(out)).not.toThrow();
+      expect(out.properties.root).toEqual({ $ref: "#/$defs/node" });
+      // The definitions the leftover $refs point at must survive so the
+      // schema remains resolvable by whoever consumes it.
+      expect(out.$defs.node.properties.value).toEqual({ type: "string" });
+      expect(out.$defs.node.properties.next).toEqual({ $ref: "#/$defs/node" });
+    });
+
+    test("acyclic refs are still inlined", async () => {
+      const schema = {
+        type: "object",
+        properties: { a: { $ref: "#/$defs/s" } },
+        $defs: { s: { type: "string" } },
+      };
+      const out = await deref(schema);
+      expect(out.properties.a).toEqual({ type: "string" });
+    });
+  });
 });
