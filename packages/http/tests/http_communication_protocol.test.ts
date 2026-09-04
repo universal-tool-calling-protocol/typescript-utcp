@@ -97,6 +97,11 @@ beforeAll(async () => {
     res.status(403).type("text/plain").send("x".repeat(5000));
   });
 
+  // A structured `error` next to a generic `message`: the structure must win.
+  app.post("/forbidden-object-then-message", (req, res) => {
+    res.status(422).json({ error: { code: "INVALID_FIELD", reason: "value out of range" }, message: "Request failed" });
+  });
+
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => {
       serverPort = (server.address() as any).port;
@@ -335,6 +340,14 @@ describe("error body edge cases", () => {
     expect(thrown.message).toContain("403");
     expect(thrown.message).toContain("Forbidden");
     expect(thrown.message.trimEnd().endsWith(":")).toBe(false);
+  });
+
+  test("a structured error field wins over a lower-priority generic message", async () => {
+    const thrown = await callForbidden("/forbidden-object-then-message");
+    expect(thrown.status).toBe(422);
+    expect(thrown.message).toContain("INVALID_FIELD");
+    expect(thrown.message).toContain("value out of range");
+    expect(thrown.message).not.toContain("[object Object]");
   });
 
   test("a huge error body is truncated in the message but kept in full on data", async () => {

@@ -251,8 +251,21 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     // APIs nest an OBJECT there (e.g. { error: { code, reason } }), so only use
     // the candidate when it's actually a string — otherwise fall through to the
     // full JSON so the real structure shows instead of "[object Object]".
-    const stringField = (...candidates: unknown[]): string | undefined =>
-      candidates.find((c): c is string => typeof c === 'string');
+    // The first of `error` / `message` / `detail` that is present decides: a
+    // non-blank string is the reason; anything else (an object, say) is a
+    // structured error, so return undefined to fall through to the full JSON
+    // rather than skipping ahead to a lower-priority generic string.
+    const stringField = (...candidates: unknown[]): string | undefined => {
+      for (const c of candidates) {
+        if (c === undefined || c === null) continue;
+        if (typeof c === 'string') {
+          if (c.trim()) return c;
+          continue;
+        }
+        return undefined;
+      }
+      return undefined;
+    };
     // A blank body carries no reason: fall back to the status text (then
     // axios's own message) rather than emitting a message that ends in a
     // bare colon. Bound the detail so a multi-megabyte error page (an HTML
