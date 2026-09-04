@@ -766,6 +766,9 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   }
   
   private async _handleOAuth2(authDetails: OAuth2Auth): Promise<string> {
+    // Validate the token endpoint before sending credentials to it, so a
+    // manual cannot direct the operator's client secret at an arbitrary host.
+    ensureSecureMcpUrl(authDetails.token_url, 'MCP OAuth2 token URL');
     const clientId = authDetails.client_id;
     const cachedToken = this._oauthTokens.get(clientId);
     if (cachedToken && cachedToken.expiresAt > Date.now()) {
