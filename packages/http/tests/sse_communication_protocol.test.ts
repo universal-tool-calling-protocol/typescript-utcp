@@ -143,6 +143,13 @@ beforeAll(async () => {
     res.end();
   });
 
+  // A complete event whose closing blank line ends in a lone CR at end of stream.
+  app.get("/events-cr-eof", (req, res) => {
+    sseHeaders(res);
+    res.write("data: {\"seq\":1}\n\r");
+    res.end();
+  });
+
   // A 200 that is not an event stream at all.
   app.get("/json-not-sse", (req, res) => {
     res.json({ error: "not a stream" });
@@ -273,8 +280,13 @@ describe("SseCommunicationProtocol", () => {
     expect(result).toEqual([{ a: 1 }]);
   });
 
-  test("a malformed retry value is ignored", async () => {
+  test("a malformed retry value does not abort the stream", async () => {
     const result = await protocol.callTool(mockClient, "sse_server.sse_tool", {}, template({ url: `http://localhost:${serverPort}/events-bad-retry` }));
+    expect(result).toEqual([{ seq: 1 }]);
+  });
+
+  test("a final blank line ending in a lone CR still completes the last event", async () => {
+    const result = await protocol.callTool(mockClient, "sse_server.sse_tool", {}, template({ url: `http://localhost:${serverPort}/events-cr-eof` }));
     expect(result).toEqual([{ seq: 1 }]);
   });
 
@@ -491,6 +503,7 @@ describe("SseCommunicationProtocol", () => {
           url: `http://localhost:${serverPort}/error`,
           auth: { auth_type: "api_key", api_key: "qs-secret-value", var_name: "api_key", location: "query" } as any,
         })).catch(() => undefined);
+        expect(errSpy).toHaveBeenCalled();
         const logged = [...logSpy.mock.calls, ...errSpy.mock.calls].map(args => args.map(String).join(" ")).join("\n");
         expect(logged).not.toContain("qs-secret-value");
         expect(logged).toContain("/events");

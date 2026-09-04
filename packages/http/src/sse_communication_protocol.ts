@@ -311,9 +311,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
     // Never re-send a request body: a reconnect re-issues the request, and for
     // a POST that would re-execute a possibly non-idempotent tool.
     const reconnect = provider.reconnect !== false && bodyContent === undefined;
-    if (provider.reconnect !== false && bodyContent !== undefined) {
-      this._logInfo(`Reconnection is disabled for '${providerName}' because the call sends a request body.`);
-    }
+    const reconnectSuppressedByBody = provider.reconnect !== false && bodyContent !== undefined;
     let retryDelayMs = provider.retry_timeout;
     let lastEventId: string | undefined;
     let reconnectAttempts = 0;
@@ -426,7 +424,10 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         }
         reconnectAttempts += 1;
         if (!reconnect || reconnectAttempts > SseCommunicationProtocol.MAX_RECONNECT_ATTEMPTS) {
-          this._logError(`SSE connection to '${providerName}' lost and not reconnecting: ${error.message}`);
+          const why = reconnectSuppressedByBody
+            ? ' (reconnection is disabled for calls that send a request body, since a re-issued POST could re-execute the tool)'
+            : '';
+          this._logError(`SSE connection to '${providerName}' lost and not reconnecting${why}: ${error.message}`);
           throw error;
         }
         this._logInfo(
@@ -506,9 +507,24 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         }
       }
 
-      // Spec: if the stream ends in the middle of an event, before the final
-      // blank line, the incomplete event is not dispatched.
-      decoder.decode();
+      // At end of stream, a held-back CR is a real line terminator and may
+      // complete the closing blank line of the last event. Dispatch whatever
+      // is fully delimited; per spec, an event still incomplete after that
+      // (no final blank line) is discarded.
+      buffer += normalise(decoder.decode());
+      if (pendingCr) {
+        buffer += '\n';
+        pendingCr = false;
+      }
+      let delimiterIndex: number;
+      while ((delimiterIndex = buffer.indexOf('\n\n')) >= 0) {
+        const rawEvent = buffer.slice(0, delimiterIndex);
+        buffer = buffer.slice(delimiterIndex + 2);
+        const event = this._parseSseEvent(rawEvent);
+        if (event) {
+          yield event;
+        }
+      }
     } finally {
       // Release the connection if the consumer stopped early or an error occurred.
       try {
@@ -557,7 +573,8 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         event.id = value;
       } else if (field === 'retry') {
         // Spec: only a value made of ASCII digits sets the reconnection time.
-        if (/^[0-9]+$/.test(value)) {
+        // An absurdly long digit string parses to Infinity and is ignored.
+        if (/^[0-9]+$/.test(value) && Number.isFinite(Number(value))) {
           event.retry = Number(value);
         }
       }

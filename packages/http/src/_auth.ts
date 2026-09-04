@@ -157,6 +157,12 @@ export async function fetchOAuth2Token(
       signal,
     });
     if (!response.ok) {
+      // Release the connection before the Basic-Auth retry.
+      try {
+        await response.body?.cancel();
+      } catch {
+        // ignore
+      }
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
     return storeToken(await response.json());

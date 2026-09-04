@@ -35,7 +35,8 @@ export function truncateByCodePoint(text: string, maxCodePoints: number): string
  * escape sequences.
  */
 export function collapseControlChars(text: string): string {
-  return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  // C0 and C1 control ranges: C1 (U+0080..U+009F) carries escape introducers too.
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim();
 }
 
 /**
