@@ -374,8 +374,8 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
         this._closeGeneration === closeGenerationAtStart
       ) {
         this._logError(
-          `The child's stderr was suppressed. Re-run with UTCP_MCP_CHILD_STDERR=inherit ` +
-          `to see what '${sessionKey}' printed while starting.`,
+          `The child's stderr was suppressed. If startup output may explain this, re-run with ` +
+          `UTCP_MCP_CHILD_STDERR=inherit to see what '${sessionKey}' printed while starting.`,
         );
       }
       throw e;
@@ -706,6 +706,11 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       // which previously collapsed to []. Matches the Python SDK.
       if (result.structuredContent != null) {
         return this._unwrapStructuredContent(result.structuredContent);
+      }
+      // Legacy, non-standard field this client accepted before 1.2; kept so a
+      // server relying on it does not silently regress.
+      if (result.structured_output != null) {
+        return result.structured_output;
       }
       if (Array.isArray(result.content)) {
         const processedList = result.content.map((item: any) => {

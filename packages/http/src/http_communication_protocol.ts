@@ -14,7 +14,8 @@ import { IUtcpClient } from '@utcp/sdk';
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
 import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf } from './_security';
-import { truncateByCodePoint } from './_text';
+import { truncateByCodePoint, collapseControlChars } from './_text';
+import { buildUrlWithPathParams } from './_url';
 
 /**
  * HTTP communication protocol implementation for UTCP client.
@@ -127,7 +128,8 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
         manualCallTemplate: httpCallTemplate,
         manual: UtcpManualSchema.parse({ tools: [] }),
         success: false,
-        errors: [axios.isAxiosError(error) ? error.message : String(error)]
+        // 200 characters, like the SSE and Streamable HTTP discovery errors.
+        errors: [this._normalizeToolError(httpCallTemplate.name ?? '', error, `discovering tools from '${httpCallTemplate.name}'`, 200).message]
       };
     }
   }
@@ -242,16 +244,17 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
    * `status` / `data` fields, so the reason survives both `.message` readers and
    * structured serialization. Non-HTTP errors (network, timeout) pass through.
    */
-  private _normalizeToolError(toolName: string, error: any): Error {
+  private _normalizeToolError(
+    toolName: string,
+    error: any,
+    context: string = `calling tool '${toolName}'`,
+    maxDetailChars: number = 2000,
+  ): Error {
     if (!axios.isAxiosError(error) || !error.response) {
       return error instanceof Error ? error : new Error(String(error));
     }
     const status = error.response.status;
     const data = error.response.data;
-    // Prefer a string `error` / `message` / `detail` field from the body; some
-    // APIs nest an OBJECT there (e.g. { error: { code, reason } }), so only use
-    // the candidate when it's actually a string — otherwise fall through to the
-    // full JSON so the real structure shows instead of "[object Object]".
     // The first of `error` / `message` / `detail` that is present decides: a
     // non-blank string is the reason; anything else (an object, say) is a
     // structured error, so return undefined to fall through to the full JSON
@@ -271,7 +274,6 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
     // axios's own message) rather than emitting a message that ends in a
     // bare colon. Bound the detail so a multi-megabyte error page (an HTML
     // stack trace, say) does not end up in messages and logs in full.
-    const MAX_DETAIL_CHARS = 2000;
     const rawDetail =
       typeof data === 'string'
         ? data.trim() || error.response.statusText || error.message
@@ -280,13 +282,23 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
           : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
     // Truncate by code point, not UTF-16 unit, so a multi-byte character on
     // the boundary is dropped whole rather than leaving a lone surrogate.
-    const detail = truncateByCodePoint(rawDetail, MAX_DETAIL_CHARS);
+    // A body made only of control characters collapses to nothing: fall back
+    // to the status text again rather than emitting a bare colon.
+    const collapsed = collapseControlChars(rawDetail) || collapseControlChars(error.response.statusText || error.message || '');
+    const detail = truncateByCodePoint(collapsed, maxDetailChars);
     const normalized = new Error(
-      `HTTP ${status} calling tool '${toolName}': ${detail}`,
+      `HTTP ${status} ${context}: ${detail}`,
     ) as Error & { status: number; data: unknown };
     // Enumerable so they survive JSON.stringify out of an isolated-vm runner.
     normalized.status = status;
     normalized.data = data;
+    // Keep the original axios error reachable for callers that inspect
+    // err.response.headers (Retry-After, say), err.code or err.cause, but
+    // non-enumerable so the large, circular response object stays out of
+    // structured serialization.
+    for (const [key, value] of Object.entries({ cause: error, response: error.response, code: error.code })) {
+      Object.defineProperty(normalized, key, { value, enumerable: false, writable: true, configurable: true });
+    }
     return normalized;
   }
 
@@ -401,18 +413,23 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
   private async _handleOAuth2(authDetails: OAuth2Auth): Promise<string> {
     const clientId = authDetails.client_id;
 
-    const cachedToken = this._oauthTokens.get(clientId);
-    if (cachedToken && cachedToken.expiresAt > Date.now()) {
-      return cachedToken.accessToken;
-    }
-
+    // Cache per full OAuth configuration, never per client_id alone: two
+    // templates may share a client_id but point at different issuers, scopes
+    // or secrets, and must not receive each other's tokens.
     // The token URL ultimately comes from a call template, and call
     // templates can be sourced from attacker-controlled OpenAPI specs
     // (the OpenApiConverter copies ``tokenUrl`` from the spec).
-    // Validate it before posting credentials so a malicious spec
-    // cannot redirect ``client_id`` / ``client_secret`` exfiltration
-    // through this protocol -- see GHSA-8cp3-qxj6-px34.
+    // Validate it before posting credentials, and before the cache is
+    // consulted, so a malicious spec cannot redirect ``client_id`` /
+    // ``client_secret`` exfiltration through this protocol nor receive a
+    // token fetched on behalf of another template -- see GHSA-8cp3-qxj6-px34.
     ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
+
+    const cacheKey = JSON.stringify([authDetails.token_url, clientId, authDetails.client_secret, authDetails.scope || '']);
+    const cachedToken = this._oauthTokens.get(cacheKey);
+    if (cachedToken && cachedToken.expiresAt > Date.now()) {
+      return cachedToken.accessToken;
+    }
 
     this._logInfo(`Fetching new OAuth2 token for client: '${clientId}'`);
     const tokenFetchPromises: Promise<string>[] = [];
@@ -441,7 +458,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
             throw new Error("Access token not found in response.");
           }
           const expiresAt = Date.now() + (response.data.expires_in * 1000 || 3600 * 1000);
-          this._oauthTokens.set(clientId, { accessToken: response.data.access_token, expiresAt });
+          this._oauthTokens.set(cacheKey, { accessToken: response.data.access_token, expiresAt });
           this._logInfo(`OAuth2 token fetched via body for client: '${clientId}'.`);
           return response.data.access_token;
         } catch (error: any) {
@@ -474,7 +491,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
             throw new Error("Access token not found in response.");
           }
           const expiresAt = Date.now() + (response.data.expires_in * 1000 || 3600 * 1000);
-          this._oauthTokens.set(clientId, { accessToken: response.data.access_token, expiresAt });
+          this._oauthTokens.set(cacheKey, { accessToken: response.data.access_token, expiresAt });
           this._logInfo(`OAuth2 token fetched via Basic Auth header for client: '${clientId}'.`);
           return response.data.access_token;
         } catch (error: any) {
@@ -503,25 +520,8 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
    * @throws Error if a required path parameter is missing.
    */
   private _buildUrlWithPathParams(urlTemplate: string, args: Record<string, any>): string {
-    let url = urlTemplate;
-    const pathParams = urlTemplate.match(/\{([^}]+)\}/g) || [];
-
-    for (const param of pathParams) {
-      const paramName = param.slice(1, -1);
-      if (paramName in args) {
-        // URL-encode the parameter value to prevent path injection
-        url = url.replace(param, encodeURIComponent(String(args[paramName])));
-        delete args[paramName];
-      } else {
-        throw new Error(`Missing required path parameter: ${paramName}`);
-      }
-    }
-
-    const remainingParams = url.match(/\{([^}]+)\}/g);
-    if (remainingParams && remainingParams.length > 0) {
-      throw new Error(`Missing required path parameters in URL template: ${remainingParams.join(', ')}`);
-    }
-
-    return url;
+    // Shared with the SSE and Streamable HTTP protocols: every occurrence is
+    // replaced and both `{param}` and `${param}` forms are accepted.
+    return buildUrlWithPathParams(urlTemplate, args);
   }
 }

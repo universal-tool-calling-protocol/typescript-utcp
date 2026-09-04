@@ -112,6 +112,15 @@ beforeAll(async () => {
     res.end();
   });
 
+  // NDJSON that never sends a newline.
+  app.get("/ndjson-no-newline", (req, res) => {
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    for (let i = 0; i < 20; i++) {
+      res.write("x".repeat(500));
+    }
+    res.end();
+  });
+
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => {
       serverPort = (server.address() as any).port;
@@ -267,7 +276,6 @@ describe("StreamableHttpCommunicationProtocol", () => {
     });
 
     test("a stalled OAuth2 token endpoint is bounded by the call timeout, once, not per credential method", async () => {
-      const started = Date.now();
       const call = protocol.callTool(mockClient, "stream_server.t", {}, template({
         url: `http://localhost:${serverPort}/whoami`,
         timeout: 800,
@@ -275,9 +283,9 @@ describe("StreamableHttpCommunicationProtocol", () => {
       }));
       try {
         await expect(call).rejects.toThrow(/Failed to fetch OAuth2 token/);
-        // Two credential methods with a fresh 800 ms budget each would take
-        // about 1600 ms; a single shared deadline finishes just after 800 ms.
-        expect(Date.now() - started).toBeLessThan(1300);
+        // With one shared deadline the second credential method never starts:
+        // its signal is already aborted, so the endpoint sees a single request.
+        expect(hangingToken).toHaveLength(1);
       } finally {
         for (const r of hangingToken.splice(0)) r.end();
       }
@@ -288,6 +296,17 @@ describe("StreamableHttpCommunicationProtocol", () => {
         url: `http://localhost:${serverPort}/pair/{id}/\${id}`,
       }));
       expect(result).toEqual([{ a: "x", b: "x" }]);
+    });
+
+    test("an NDJSON line that never ends is rejected instead of buffered until the deadline", async () => {
+      const original = StreamableHttpCommunicationProtocol.MAX_LINE_CHARS;
+      (StreamableHttpCommunicationProtocol as any).MAX_LINE_CHARS = 1000;
+      try {
+        const call = protocol.callTool(mockClient, "stream_server.t", {}, template({ url: `http://localhost:${serverPort}/ndjson-no-newline` }));
+        await expect(call).rejects.toThrow(/NDJSON line exceeded/);
+      } finally {
+        (StreamableHttpCommunicationProtocol as any).MAX_LINE_CHARS = original;
+      }
     });
   });
 });

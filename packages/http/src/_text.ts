@@ -27,3 +27,57 @@ export function truncateByCodePoint(text: string, maxCodePoints: number): string
   }
   return kept;
 }
+
+/**
+ * Collapse control characters (newlines, carriage returns, ANSI escape
+ * introducers, NUL) into single spaces so server-controlled text folded into
+ * an error message or a log line cannot forge extra log records or terminal
+ * escape sequences.
+ */
+export function collapseControlChars(text: string): string {
+  // C0 and C1 control ranges: C1 (U+0080..U+009F) carries escape introducers too.
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim();
+}
+
+/**
+ * How much of an error response body is read at all. Error responses can come
+ * from an attacker-controlled endpoint, so the read is bounded up front rather
+ * than buffered in full and truncated afterwards.
+ */
+export const MAX_ERROR_BODY_READ_BYTES = 64 * 1024;
+
+/**
+ * Read the start of an error response body (at most MAX_ERROR_BODY_READ_BYTES),
+ * release the connection, and return it cleaned and truncated to `maxChars`
+ * code points. Returns '' when the body is empty or cannot be read.
+ */
+export async function readErrorDetail(response: Response, maxChars: number): Promise<string> {
+  const body = response.body;
+  if (!body) {
+    return '';
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let text = '';
+  let bytes = 0;
+  try {
+    while (bytes < MAX_ERROR_BODY_READ_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // A single oversized chunk must not defeat the budget either.
+      const chunk = value.subarray(0, MAX_ERROR_BODY_READ_BYTES - bytes);
+      bytes += chunk.length;
+      text += decoder.decode(chunk, { stream: true });
+    }
+    text += decoder.decode();
+  } catch {
+    // Whatever was read so far is still the best detail available.
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // ignore
+    }
+  }
+  return truncateByCodePoint(collapseControlChars(text), maxChars);
+}

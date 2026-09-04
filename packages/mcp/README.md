@@ -18,7 +18,7 @@ The `@utcp/mcp` package enables the `UtcpClient` to interact with tools defined 
     *   **Tool Execution**: Invokes tools on MCP servers using the MCP SDK's `callTool()`, translating arguments and processing raw MCP results into a unified format.
     *   **Transport Support**: Seamlessly handles both `stdio` (spawning a local process) and `http` (connecting to a remote streamable HTTP MCP server) via the `@modelcontextprotocol/sdk` client.
     *   **Authentication Support**: Supports `OAuth2Auth` for HTTP-based MCP servers, including token caching and automatic refresh.
-    *   **Result Processing**: Intelligently adapts raw MCP tool results (which can contain `structured_output`, `text` content, or `json` content) into a more usable format for the UTCP client.
+    *   **Result Processing**: Intelligently adapts raw MCP tool results (`structuredContent` when the server sends it, otherwise `text` or `json` content; the legacy non-standard `structured_output` field is still accepted) into a more usable format for the UTCP client.
 
 ## Installation
 

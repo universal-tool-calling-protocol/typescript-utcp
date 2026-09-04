@@ -1,5 +1,5 @@
 // packages/http/tests/sse_communication_protocol.test.ts
-import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll, spyOn } from "bun:test";
 import express, { Express } from 'express';
 import { Server } from 'http';
 // Import from package index to trigger auto-registration
@@ -21,6 +21,7 @@ function resetFlaky(alwaysDrop = false) {
 }
 const flaky503 = { connections: 0 };
 const hugeRetry = { connections: 0 };
+const emptyId = { connections: 0, lastEventIds: [] as (string | undefined)[] };
 // Responses deliberately left without headers; ended by the test that opened them.
 const hanging: express.Response[] = [];
 
@@ -105,7 +106,7 @@ beforeAll(async () => {
   // Serves the first event then drops the TCP connection on the first connection
   // (or on every connection when alwaysDrop is set). A reconnecting client is
   // served the remaining events and a clean end of stream.
-  app.get("/flaky", (req, res) => {
+  const flakyHandler = (req: express.Request, res: express.Response) => {
     flaky.connections += 1;
     flaky.lastEventIds.push(req.headers['last-event-id'] as string | undefined);
     sseHeaders(res);
@@ -117,6 +118,41 @@ beforeAll(async () => {
     res.write("id: 2\ndata: {\"seq\":2}\n\n");
     res.write("id: 3\ndata: {\"seq\":3}\n\n");
     res.end();
+  };
+  app.get("/flaky", flakyHandler);
+  app.post("/flaky", flakyHandler);
+
+  // Sets an id, resets it with an empty id, then drops the connection.
+  app.get("/empty-id", (req, res) => {
+    emptyId.connections += 1;
+    emptyId.lastEventIds.push(req.headers['last-event-id'] as string | undefined);
+    sseHeaders(res);
+    if (emptyId.connections === 1) {
+      res.write("id: 1\ndata: {\"seq\":1}\n\nid\ndata: {\"seq\":2}\n\n");
+      setTimeout(() => req.socket.destroy(), 10);
+      return;
+    }
+    res.write("data: {\"seq\":3}\n\n");
+    res.end();
+  });
+
+  // A retry field that is not made of digits must be ignored.
+  app.get("/events-bad-retry", (req, res) => {
+    sseHeaders(res);
+    res.write("retry: -1\ndata: {\"seq\":1}\n\nretry: 20ms\n\n");
+    res.end();
+  });
+
+  // A complete event whose closing blank line ends in a lone CR at end of stream.
+  app.get("/events-cr-eof", (req, res) => {
+    sseHeaders(res);
+    res.write("data: {\"seq\":1}\n\r");
+    res.end();
+  });
+
+  // A 200 that is not an event stream at all.
+  app.get("/json-not-sse", (req, res) => {
+    res.json({ error: "not a stream" });
   });
 
   // One multi-line CRLF event whose CRLF is split across two writes.
@@ -239,9 +275,19 @@ describe("SseCommunicationProtocol", () => {
     expect(result).toEqual([{ seq: 2 }]);
   });
 
-  test("handles CRLF delimiters and a trailing unterminated event", async () => {
+  test("handles CRLF delimiters and discards an unterminated trailing event (spec)", async () => {
     const result = await protocol.callTool(mockClient, "sse_server.sse_tool", {}, template({ url: `http://localhost:${serverPort}/events-crlf` }));
-    expect(result).toEqual([{ a: 1 }, { a: 2 }]);
+    expect(result).toEqual([{ a: 1 }]);
+  });
+
+  test("a malformed retry value does not abort the stream", async () => {
+    const result = await protocol.callTool(mockClient, "sse_server.sse_tool", {}, template({ url: `http://localhost:${serverPort}/events-bad-retry` }));
+    expect(result).toEqual([{ seq: 1 }]);
+  });
+
+  test("a final blank line ending in a lone CR still completes the last event", async () => {
+    const result = await protocol.callTool(mockClient, "sse_server.sse_tool", {}, template({ url: `http://localhost:${serverPort}/events-cr-eof` }));
+    expect(result).toEqual([{ seq: 1 }]);
   });
 
   test("body_field switches to POST with a JSON body, header_fields become headers, Accept is set", async () => {
@@ -393,6 +439,78 @@ describe("SseCommunicationProtocol", () => {
         url: `http://localhost:${serverPort}/pair/{id}/\${id}`,
       }));
       expect(result).toEqual([{ a: "x", b: "x" }]);
+    });
+  });
+
+  describe("spec conformance follow-ups", () => {
+    test("event_type 'message' matches events without an event field", async () => {
+      // /events sends: event "message" (explicit), event "update", and one with no event field.
+      const result = await protocol.callTool(mockClient, "sse_server.t", {}, template({
+        url: `http://localhost:${serverPort}/events`,
+        event_type: "message",
+      }));
+      expect(result).toEqual([{ seq: 1, query: {} }, "plain text payload"]);
+    });
+
+    test("an empty id resets the last event ID, so no Last-Event-ID header is sent on reconnect", async () => {
+      emptyId.connections = 0;
+      emptyId.lastEventIds = [];
+      const result = await protocol.callTool(mockClient, "sse_server.t", {}, template({
+        url: `http://localhost:${serverPort}/empty-id`,
+        reconnect: true,
+        retry_timeout: 10,
+      }));
+      expect(result).toEqual([{ seq: 1 }, { seq: 2 }, { seq: 3 }]);
+      expect(emptyId.lastEventIds).toEqual([undefined, undefined]);
+    });
+
+    test("a 200 that is not text/event-stream fails instead of yielding zero events", async () => {
+      const call = protocol.callTool(mockClient, "sse_server.t", {}, template({ url: `http://localhost:${serverPort}/json-not-sse` }));
+      await expect(call).rejects.toBeInstanceOf(SseProtocolError);
+    });
+
+    test("a dropped POST stream is not re-issued", async () => {
+      resetFlaky();
+      const received: any[] = [];
+      let error: any;
+      try {
+        for await (const chunk of protocol.callToolStreaming(mockClient, "sse_server.t", { payload: { n: 1 } }, template({
+          url: `http://localhost:${serverPort}/flaky`,
+          reconnect: true,
+          retry_timeout: 10,
+          body_field: "payload",
+        }))) {
+          received.push(chunk);
+        }
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeDefined();
+      expect(received).toEqual([{ seq: 1 }]);
+      expect(flaky.connections).toBe(1);
+    });
+
+    test("a query-string API key is not written to the logs", async () => {
+      const logSpy = spyOn(console, "log");
+      const errSpy = spyOn(console, "error");
+      try {
+        await protocol.callTool(mockClient, "sse_server.t", {}, template({
+          url: `http://localhost:${serverPort}/events`,
+          auth: { auth_type: "api_key", api_key: "qs-secret-value", var_name: "api_key", location: "query" } as any,
+        }));
+        // Also a failing call, which goes through the error log sink.
+        await protocol.callTool(mockClient, "sse_server.t", {}, template({
+          url: `http://localhost:${serverPort}/error`,
+          auth: { auth_type: "api_key", api_key: "qs-secret-value", var_name: "api_key", location: "query" } as any,
+        })).catch(() => undefined);
+        expect(errSpy).toHaveBeenCalled();
+        const logged = [...logSpy.mock.calls, ...errSpy.mock.calls].map(args => args.map(String).join(" ")).join("\n");
+        expect(logged).not.toContain("qs-secret-value");
+        expect(logged).toContain("/events");
+      } finally {
+        logSpy.mockRestore();
+        errSpy.mockRestore();
+      }
     });
   });
 });

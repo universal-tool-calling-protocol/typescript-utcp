@@ -8,14 +8,13 @@ import { CommunicationProtocol } from '@utcp/sdk';
 import { RegisterManualResult } from '@utcp/sdk';
 import { CallTemplate } from '@utcp/sdk';
 import { UtcpManual, UtcpManualSerializer } from '@utcp/sdk';
-import { ApiKeyAuth } from '@utcp/sdk';
-import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
-import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { StreamableHttpCallTemplate, StreamableHttpCallTemplateSchema } from './streamable_http_call_template';
 import { ensureSecureUrl, assertNoCrlf } from './_security';
-import { truncateByCodePoint } from './_text';
+import { applyAuth, finalizeAuthHeaders, fetchOAuth2Token, AuthLogger } from './_auth';
+import { readErrorDetail } from './_text';
+import { buildUrlWithPathParams } from './_url';
 
 /**
  * REQUIRED
@@ -29,6 +28,13 @@ import { truncateByCodePoint } from './_text';
  *   - application/octet-stream and anything else: Buffer chunks of at most chunk_size bytes
  */
 export class StreamableHttpCommunicationProtocol implements CommunicationProtocol {
+  /**
+   * Largest NDJSON line the parser buffers (in UTF-16 code units) before
+   * declaring the stream malformed. Guards against a server that streams
+   * bytes without ever sending a newline.
+   */
+  public static readonly MAX_LINE_CHARS = 16 * 1024 * 1024;
+
   private oauthTokens: Map<string, { access_token: string; expires_at?: number }> = new Map();
 
   private _logInfo(message: string): void {
@@ -39,61 +45,22 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     console.error(`[StreamableHttpCommunicationProtocol] ${message}`);
   }
 
+  private get _authLog(): AuthLogger {
+    return { info: (m) => this._logInfo(m), error: (m) => this._logError(m) };
+  }
+
   private _applyAuth(
     provider: StreamableHttpCallTemplate,
     headers: Record<string, string>,
     queryParams: Record<string, any>
   ): { auth?: { username: string; password: string }; cookies: Record<string, string> } {
-    let auth: { username: string; password: string } | undefined;
-    const cookies: Record<string, string> = {};
-
-    if (provider.auth) {
-      if ('api_key' in provider.auth) {
-        const apiKeyAuth = provider.auth as ApiKeyAuth;
-        if (apiKeyAuth.api_key) {
-          assertNoCrlf(apiKeyAuth.var_name, 'ApiKeyAuth.var_name');
-          // Default to 'header' if location is not specified
-          const location = apiKeyAuth.location || 'header';
-          if (location === 'header') {
-            headers[apiKeyAuth.var_name] = apiKeyAuth.api_key;
-          } else if (location === 'query') {
-            queryParams[apiKeyAuth.var_name] = apiKeyAuth.api_key;
-          } else if (location === 'cookie') {
-            cookies[apiKeyAuth.var_name] = apiKeyAuth.api_key;
-          }
-        } else {
-          this._logError('API key not found for ApiKeyAuth.');
-          throw new Error('API key for ApiKeyAuth not found.');
-        }
-      } else if ('username' in provider.auth && 'password' in provider.auth) {
-        const basicAuth = provider.auth as BasicAuth;
-        auth = { username: basicAuth.username, password: basicAuth.password };
-      } else if ('token_url' in provider.auth) {
-        // OAuth2 will be handled separately
-      } else if (provider.auth.auth_type === 'oauth2_user') {
-        // Interactive (user-delegated) OAuth2: token provisioned out-of-band.
-        const userAuth = provider.auth as OAuth2UserAuth;
-        if (!userAuth.access_token) {
-          throw new Error(
-            "access_token for oauth2_user auth is empty. Run an interactive " +
-              "login to provision it.",
-          );
-        }
-        const headerName = userAuth.var_name || 'Authorization';
-        const prefix = userAuth.prefix ?? 'Bearer ';
-        assertNoCrlf(headerName, 'OAuth2UserAuth.var_name');
-        assertNoCrlf(prefix, 'OAuth2UserAuth.prefix');
-        assertNoCrlf(userAuth.access_token, 'OAuth2UserAuth.access_token');
-        headers[headerName] = `${prefix}${userAuth.access_token}`;
-      }
-    }
-
-    return { auth, cookies };
+    return applyAuth(provider.auth, headers, queryParams, this._authLog);
   }
 
   /**
    * Applies Basic auth, cookies and (if configured) an OAuth2 client-credentials
-   * bearer token to the request headers.
+   * bearer token to the request headers. Shared with the other fetch-based
+   * protocol via _auth.ts so security fixes land in one place.
    */
   private async _finalizeAuthHeaders(
     provider: StreamableHttpCallTemplate,
@@ -102,23 +69,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     cookies: Record<string, string>,
     signal: AbortSignal,
   ): Promise<void> {
-    if (auth) {
-      const credentials = Buffer.from(`${auth.username}:${auth.password}`).toString('base64');
-      headers['Authorization'] = `Basic ${credentials}`;
-    }
-
-    if (Object.keys(cookies).length > 0) {
-      const cookieHeader = Object.entries(cookies)
-        .map(([k, v]) => `${k}=${v}`)
-        .join('; ');
-      assertNoCrlf(cookieHeader, 'Cookie');
-      headers['Cookie'] = headers['Cookie'] ? `${headers['Cookie']}; ${cookieHeader}` : cookieHeader;
-    }
-
-    if (provider.auth && 'token_url' in provider.auth) {
-      const token = await this._handleOAuth2(provider.auth as OAuth2Auth, signal);
-      headers['Authorization'] = `Bearer ${token}`;
-    }
+    return finalizeAuthHeaders(provider.auth, headers, auth, cookies, signal, this.oauthTokens, this._authLog);
   }
 
   /**
@@ -172,11 +123,8 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
           // Read the body before throwing: servers put the real reason there
           // (e.g. { "error": "..." }); discarding it leaves callers with only a
           // status code. Fall back to statusText when the body is empty.
-          const body = await response.text().catch(() => '');
-          // Truncate like the streaming path does, so a huge error page does
-          // not land in errors[] and logs in full. By code point, so a
-          // multi-byte character on the boundary cannot leave a lone surrogate.
-          const detail = truncateByCodePoint(body.trim(), 200) || response.statusText;
+          // Bounded read, control characters collapsed, truncated by code point.
+          const detail = (await readErrorDetail(response, 200)) || response.statusText;
           throw new Error(`HTTP ${response.status}: ${detail}`);
         }
 
@@ -335,7 +283,9 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
         }
       }
 
-      this._logInfo(`Executing streaming HTTP tool '${toolName}' with URL: ${urlObj.toString()} and method: ${provider.http_method}`);
+      // Log without the query string: an API key with location 'query', or any
+      // sensitive tool argument, would otherwise land in the logs.
+      this._logInfo(`Executing streaming HTTP tool '${toolName}' with URL: ${urlObj.origin}${urlObj.pathname} and method: ${provider.http_method}`);
 
       // ``redirect: 'error'`` -- see registerManual for rationale (GHSA-9qhg-99ww-9mqc).
       // ``keepalive: false`` -- do not take a pooled socket for the stream. Bun's
@@ -352,13 +302,8 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
       });
 
       if (!response.ok) {
-        let detail = '';
-        try {
-          detail = await response.text();
-        } catch {
-          // ignore body read failures on error responses
-        }
-        throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ` - ${detail.slice(0, 200)}` : ''}`);
+        const detail = await readErrorDetail(response, 200);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}${detail ? ` - ${detail}` : ''}`);
       }
 
       for await (const chunk of this._processHttpStream(response, provider.chunk_size, provider.name || toolName)) {
@@ -380,7 +325,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
     chunkSize: number | undefined,
     providerName: string,
   ): AsyncGenerator<any, void, unknown> {
-    const contentType = response.headers.get('content-type') || '';
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
     const body = response.body;
 
     if (!body) {
@@ -409,9 +354,23 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
           while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
             const line = buffer.slice(0, newlineIndex).replace(/\r$/, '');
             buffer = buffer.slice(newlineIndex + 1);
+            if (line.length > StreamableHttpCommunicationProtocol.MAX_LINE_CHARS) {
+              // A complete but oversized line arriving in one read must hit
+              // the same cap as an unterminated one.
+              throw new Error(
+                `NDJSON line exceeded ${StreamableHttpCommunicationProtocol.MAX_LINE_CHARS} characters`
+              );
+            }
             if (line.trim()) {
               yield parseLine(line);
             }
+          }
+          if (buffer.length > StreamableHttpCommunicationProtocol.MAX_LINE_CHARS) {
+            // A server that never sends a newline must not grow memory until
+            // the call deadline; mirrors the SSE event buffer cap.
+            throw new Error(
+              `NDJSON line exceeded ${StreamableHttpCommunicationProtocol.MAX_LINE_CHARS} characters without a newline`
+            );
           }
         }
         buffer += decoder.decode();
@@ -465,78 +424,10 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
   }
 
   /**
-   * Handles the OAuth2 client-credentials flow, trying credentials in the body
-   * first and then as a Basic Auth header. Tokens are cached per full OAuth
-   * configuration (token URL, client id, secret, scope), never per client_id
-   * alone: two templates may share a client_id but point at different issuers.
-   * Both credential methods run under the caller's `signal`, which carries
-   * the call's own deadline, so the whole token flow can never exceed it.
+   * OAuth2 client-credentials flow, shared via _auth.ts.
    */
   private async _handleOAuth2(authDetails: OAuth2Auth, signal: AbortSignal): Promise<string> {
-    const clientId = authDetails.client_id;
-
-    // The token URL may come from an untrusted call template; validate it
-    // before the cache is consulted, so a template with a rejected URL never
-    // receives a token fetched on behalf of another (GHSA-8cp3-qxj6-px34).
-    ensureSecureUrl(authDetails.token_url, 'OAuth2 token URL');
-
-    const cacheKey = JSON.stringify([authDetails.token_url, clientId, authDetails.client_secret, authDetails.scope || '']);
-    const cached = this.oauthTokens.get(cacheKey);
-    if (cached && (cached.expires_at === undefined || cached.expires_at > Date.now())) {
-      return cached.access_token;
-    }
-
-    const storeToken = (tokenData: any): string => {
-      if (!tokenData || !tokenData.access_token) {
-        throw new Error('Access token not found in response.');
-      }
-      const expiresIn = typeof tokenData.expires_in === 'number' ? tokenData.expires_in : 3600;
-      this.oauthTokens.set(cacheKey, { access_token: tokenData.access_token, expires_at: Date.now() + expiresIn * 1000 });
-      return tokenData.access_token;
-    };
-
-    const requestToken = async (headers: Record<string, string>, form: Record<string, string>): Promise<string> => {
-      if (signal.aborted) {
-        throw new Error('Timed out before the token request could start.');
-      }
-      const response = await fetch(authDetails.token_url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
-        body: new URLSearchParams(form).toString(),
-        redirect: 'error',
-        signal,
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-      return storeToken(await response.json());
-    };
-
-    // Method 1: credentials in the request body
-    try {
-      this._logInfo(`Attempting OAuth2 token fetch for '${clientId}' with credentials in body.`);
-      return await requestToken({}, {
-        grant_type: 'client_credentials',
-        client_id: clientId,
-        client_secret: authDetails.client_secret,
-        scope: authDetails.scope || '',
-      });
-    } catch (error: any) {
-      this._logError(`OAuth2 with credentials in body failed for '${clientId}': ${error.message}. Trying Basic Auth header.`);
-    }
-
-    // Method 2: credentials as a Basic Auth header
-    try {
-      this._logInfo(`Attempting OAuth2 token fetch for '${clientId}' with Basic Auth header.`);
-      const credentials = Buffer.from(`${clientId}:${authDetails.client_secret}`).toString('base64');
-      return await requestToken({ 'Authorization': `Basic ${credentials}` }, {
-        grant_type: 'client_credentials',
-        scope: authDetails.scope || '',
-      });
-    } catch (error: any) {
-      this._logError(`OAuth2 with Basic Auth header also failed for '${clientId}': ${error.message}`);
-      throw new Error(`Failed to fetch OAuth2 token for client '${clientId}' after trying all methods. Details: ${error.message}`);
-    }
+    return fetchOAuth2Token(authDetails, signal, this.oauthTokens, this._authLog);
   }
 
   /**
@@ -544,37 +435,14 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
    * Consumed parameters are removed from args so they are not sent as query parameters.
    */
   private _buildUrlWithPathParams(urlTemplate: string, args: Record<string, any>): string {
-    let url = urlTemplate;
-    // Both the `{param}` form from the spec and the `${param}` form the
-    // package README documents.
-    const placeholders = urlTemplate.match(/\$?\{([^}]+)\}/g) || [];
-    const paramNames = Array.from(new Set(
-      placeholders.map(p => (p.startsWith('${') ? p.slice(2, -1) : p.slice(1, -1)))
-    ));
-
-    for (const paramName of paramNames) {
-      if (!(paramName in args)) {
-        throw new Error(`Missing required path parameter: ${paramName}`);
-      }
-      // URL-encode the value to prevent path injection, and replace every
-      // occurrence of either form (a template may repeat a parameter).
-      // `${x}` goes first so that replacing `{x}` never leaves a stray `$`.
-      const value = encodeURIComponent(String(args[paramName]));
-      url = url.split('${' + paramName + '}').join(value).split('{' + paramName + '}').join(value);
-      delete args[paramName];
-    }
-
-    const remainingParams = url.match(/\$?\{([^}]+)\}/g);
-    if (remainingParams && remainingParams.length > 0) {
-      throw new Error(`Missing required path parameters in URL template: ${remainingParams.join(', ')}`);
-    }
-
-    return url;
+    return buildUrlWithPathParams(urlTemplate, args);
   }
 
   /**
    * REQUIRED
-   * Close all active connections and clear internal state.
+   * Clear cached OAuth2 tokens. Streams in flight are owned by their
+   * consumers and end when the consumer stops iterating, the call deadline
+   * fires, or the server closes.
    */
   async close(): Promise<void> {
     this._logInfo('Closing StreamableHttpCommunicationProtocol.');

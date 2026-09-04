@@ -288,9 +288,8 @@ describe("HttpCommunicationProtocol", () => {
   });
 });
 
-// The streamable/sse protocols' callTool paths are stubs; the only real fetch
-// that can fail with a body is in registerManual (discovery). These prove that
-// failure surfaces the server's body, not just "HTTP 403: Forbidden".
+// Discovery (registerManual) for the streamable/sse protocols must surface the
+// server's body on failure, not just "HTTP 403: Forbidden".
 describe("discovery error body (streamable_http + sse)", () => {
   test("StreamableHttpCommunicationProtocol.registerManual surfaces the server body", async () => {
     const protocol = new StreamableHttpCommunicationProtocol();
@@ -322,6 +321,21 @@ describe("discovery error body (streamable_http + sse)", () => {
   });
 });
 
+describe("path parameters", () => {
+  test("repeated and ${param}-style path parameters are all substituted", async () => {
+    const protocol = new HttpCommunicationProtocol();
+    const result = await protocol.callTool(mockClient, "test.path", { p: "x", extra: "1" }, {
+      name: "path_server",
+      call_template_type: "http",
+      url: `http://localhost:${serverPort}/tool/{p}/\${p}`,
+      http_method: "GET",
+    } as any);
+    expect(result.result).toBe("path_success");
+    expect(result.params).toEqual({ param1: "x", param2: "x" });
+    expect(result.query).toEqual({ extra: "1" });
+  });
+});
+
 describe("error body edge cases", () => {
   const callForbidden = async (path: string) => {
     const protocol = new HttpCommunicationProtocol();
@@ -337,6 +351,29 @@ describe("error body edge cases", () => {
     }
     throw new Error("expected the call to fail");
   };
+
+  test("the original axios error stays reachable but out of JSON serialization", async () => {
+    const thrown = await callForbidden("/forbidden");
+    expect(thrown.response.status).toBe(403);
+    expect(thrown.cause).toBeDefined();
+    const roundTripped = JSON.parse(JSON.stringify(thrown));
+    expect(roundTripped.status).toBe(403);
+    expect("response" in roundTripped).toBe(false);
+    expect("cause" in roundTripped).toBe(false);
+  });
+
+  test("registerManual surfaces the server's error body too", async () => {
+    const protocol = new HttpCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "forbidden_http",
+      call_template_type: "http",
+      url: `http://localhost:${serverPort}/forbidden-discovery`,
+      http_method: "GET",
+    } as any);
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain("403");
+    expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
+  });
 
   test("a blank error body falls back to the status text instead of a bare colon", async () => {
     const thrown = await callForbidden("/forbidden-empty");
