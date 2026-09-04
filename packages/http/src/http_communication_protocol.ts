@@ -14,6 +14,7 @@ import { IUtcpClient } from '@utcp/sdk';
 import { HttpCallTemplateSchema, HttpCallTemplate } from './http_call_template';
 import { OpenApiConverter } from './openapi_converter';
 import { ensureSecureUrl, safeRequestWithRedirects, assertNoCrlf } from './_security';
+import { truncateByCodePoint } from './_text';
 
 /**
  * HTTP communication protocol implementation for UTCP client.
@@ -279,8 +280,7 @@ export class HttpCommunicationProtocol implements CommunicationProtocol {
           : (stringField(data.error, data.message, data.detail) ?? JSON.stringify(data));
     // Truncate by code point, not UTF-16 unit, so a multi-byte character on
     // the boundary is dropped whole rather than leaving a lone surrogate.
-    const codePoints = Array.from(rawDetail);
-    const detail = codePoints.length > MAX_DETAIL_CHARS ? `${codePoints.slice(0, MAX_DETAIL_CHARS).join('')}…` : rawDetail;
+    const detail = truncateByCodePoint(rawDetail, MAX_DETAIL_CHARS);
     const normalized = new Error(
       `HTTP ${status} calling tool '${toolName}': ${detail}`,
     ) as Error & { status: number; data: unknown };

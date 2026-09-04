@@ -15,6 +15,7 @@ import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { SseCallTemplate, SseCallTemplateSchema } from './sse_call_template';
 import { ensureSecureUrl, assertNoCrlf } from './_security';
+import { truncateByCodePoint } from './_text';
 
 /**
  * A single parsed Server-Sent Event.
@@ -222,7 +223,7 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
         // Truncate like the streaming path does, so a huge error page does
         // not land in errors[] and logs in full. By code point, so a
         // multi-byte character on the boundary cannot leave a lone surrogate.
-        const detail = Array.from(body.trim()).slice(0, 200).join('') || response.statusText;
+        const detail = truncateByCodePoint(body.trim(), 200) || response.statusText;
         throw new Error(`HTTP ${response.status}: ${detail}`);
       }
 

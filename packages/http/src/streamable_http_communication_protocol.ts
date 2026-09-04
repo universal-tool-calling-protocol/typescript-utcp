@@ -15,6 +15,7 @@ import { OAuth2UserAuth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { StreamableHttpCallTemplate, StreamableHttpCallTemplateSchema } from './streamable_http_call_template';
 import { ensureSecureUrl, assertNoCrlf } from './_security';
+import { truncateByCodePoint } from './_text';
 
 /**
  * REQUIRED
@@ -175,7 +176,7 @@ export class StreamableHttpCommunicationProtocol implements CommunicationProtoco
           // Truncate like the streaming path does, so a huge error page does
           // not land in errors[] and logs in full. By code point, so a
           // multi-byte character on the boundary cannot leave a lone surrogate.
-          const detail = Array.from(body.trim()).slice(0, 200).join('') || response.statusText;
+          const detail = truncateByCodePoint(body.trim(), 200) || response.statusText;
           throw new Error(`HTTP ${response.status}: ${detail}`);
         }
 
