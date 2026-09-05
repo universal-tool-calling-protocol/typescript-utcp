@@ -18,7 +18,7 @@ The `@utcp/mcp` package enables the `UtcpClient` to interact with tools defined 
     *   **Tool Execution**: Invokes tools on MCP servers using the MCP SDK's `callTool()`, translating arguments and processing raw MCP results into a unified format.
     *   **Transport Support**: Seamlessly handles both `stdio` (spawning a local process) and `http` (connecting to a remote streamable HTTP MCP server) via the `@modelcontextprotocol/sdk` client.
     *   **Authentication Support**: Supports `OAuth2Auth` for HTTP-based MCP servers, including token caching and automatic refresh.
-    *   **Result Processing**: Intelligently adapts raw MCP tool results (which can contain `structured_output`, `text` content, or `json` content) into a more usable format for the UTCP client.
+    *   **Result Processing**: Intelligently adapts raw MCP tool results (`structuredContent` when the server sends it, otherwise `text` or `json` content; the legacy non-standard `structured_output` field is still accepted) into a more usable format for the UTCP client.
 
 ## Installation
 
@@ -154,6 +154,16 @@ const client = await UtcpClient.create(process.cwd(), {
   }
 });
 ```
+
+### Child Process stderr
+
+Stdio MCP servers often write banners, telemetry notices and auth chatter to stderr, multiplied by every server you federate. `@utcp/mcp` therefore discards the child's stderr by default. To see it while debugging a server that fails to start, opt back in for the host process:
+
+```bash
+UTCP_MCP_CHILD_STDERR=inherit node your-app.js
+```
+
+Any other value, or leaving the variable unset, keeps stderr suppressed. When a stdio server fails to connect, the error log reminds you of this switch.
 
 ### HTTP Server Configuration
 

@@ -301,7 +301,10 @@ describe("McpCommunicationProtocol", () => {
 
   describe("Session eviction on session-class failures (issue #34)", () => {
     const CONFIG = { transport: "stdio" as const, command: "true", timeout: 60 };
-    const KEY = "s:stdio";
+    // The session key now includes a config+auth fingerprint; compute it the
+    // same way the protocol does. This is the key for (CONFIG, no-auth), which
+    // the run()-based tests below exercise.
+    const KEY = (new McpCommunicationProtocol() as any)._sessionKey("s", CONFIG, undefined);
 
     /** A fake cached session whose close() we can observe, wired into the
      * protocol's private session map the way _getOrCreateSession would. */
@@ -312,9 +315,10 @@ describe("McpCommunicationProtocol", () => {
         close() { this.closed += 1; return Promise.resolve(); },
         op: () => behavior((calls += 1)),
       };
-      (protocol as any)._mcpSessions.set(KEY, client);
-      (protocol as any)._getOrCreateSession = () => {
-        (protocol as any)._mcpSessions.set(KEY, client);
+      // Cache under the SAME key the real _getOrCreateSession would for these
+      // args, so _withSession's cleanup (which recomputes the key) targets it.
+      (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+        (protocol as any)._mcpSessions.set((protocol as any)._sessionKey(sn, sc, a), client);
         return Promise.resolve(client);
       };
       return client;
@@ -383,7 +387,8 @@ describe("McpCommunicationProtocol", () => {
         (protocol as any)._withSession("s", config, undefined, () => client.op())
       ).rejects.toThrow("timed out");
       expect(client.closed).toBe(1);
-      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+      // This test uses a modified config (timeout: 1), so its session key differs.
+      expect((protocol as any)._mcpSessions.has((protocol as any)._sessionKey("s", config, undefined))).toBe(false);
     });
 
     test("an auth failure dressed in connection vocabulary is not retried", async () => {
@@ -435,15 +440,16 @@ describe("McpCommunicationProtocol", () => {
       // its local expiry — evicting only the session would resend the same
       // rejected token on every redial until the TTL ran out.
       const protocol = new McpCommunicationProtocol();
-      (protocol as any)._oauthTokens.set("cid", { accessToken: "revoked", expiresAt: Date.now() + 3600_000 });
       const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
+      const tokenKey = (protocol as any)._oauthCacheKey(auth);
+      (protocol as any)._oauthTokens.set(tokenKey, { accessToken: "revoked", expiresAt: Date.now() + 3600_000 });
       const client = seed(protocol, () =>
         Promise.reject(new Error("HTTP 401 Unauthorized")));
 
       await expect(
         (protocol as any)._withSession("s", CONFIG, auth, () => client.op())
       ).rejects.toThrow("401");
-      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+      expect((protocol as any)._oauthTokens.has(tokenKey)).toBe(false);
     });
 
     test("a slower token-fetch variant cannot repopulate the cache after invalidation", async () => {
@@ -461,14 +467,15 @@ describe("McpCommunicationProtocol", () => {
       };
       const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
 
+      const tokenKey = (protocol as any)._oauthCacheKey(auth);
       await expect((protocol as any)._handleOAuth2(auth)).resolves.toBe("fast");
-      expect((protocol as any)._oauthTokens.get("cid")?.accessToken).toBe("fast");
+      expect((protocol as any)._oauthTokens.get(tokenKey)?.accessToken).toBe("fast");
 
       (protocol as any)._invalidateOAuthToken(auth);
       resolveSlow({ data: { access_token: "slow", expires_in: 3600 } });
       await slow;
       await new Promise((r) => setTimeout(r, 0));
-      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+      expect((protocol as any)._oauthTokens.has(tokenKey)).toBe(false);
     });
 
     test("a fetch already in flight when the token is invalidated does not cache its result", async () => {
@@ -484,7 +491,7 @@ describe("McpCommunicationProtocol", () => {
 
       // The in-flight attempt still gets its token — only the CACHE is guarded.
       await expect(fetching).resolves.toBe("stale");
-      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+      expect((protocol as any)._oauthTokens.has((protocol as any)._oauthCacheKey(auth))).toBe(false);
     });
 
     test("a session whose connect resolves after close() began is closed, not cached", async () => {
@@ -573,8 +580,9 @@ describe("McpCommunicationProtocol", () => {
       // valid OAuth token. An McpError is a well-formed response from a live
       // session; only its -32001 timeout code says anything about health.
       const protocol = new McpCommunicationProtocol();
-      (protocol as any)._oauthTokens.set("cid", { accessToken: "valid", expiresAt: Date.now() + 3600_000 });
       const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
+      const tokenKey = (protocol as any)._oauthCacheKey(auth);
+      (protocol as any)._oauthTokens.set(tokenKey, { accessToken: "valid", expiresAt: Date.now() + 3600_000 });
       const client = seed(protocol, () =>
         Promise.reject(new McpError(-32602, "Authorization header missing for downstream API")));
 
@@ -582,8 +590,9 @@ describe("McpCommunicationProtocol", () => {
         (protocol as any)._withSession("s", CONFIG, auth, () => client.op())
       ).rejects.toThrow("Authorization");
       expect(client.closed).toBe(0);
-      expect((protocol as any)._mcpSessions.get(KEY)).toBe(client);
-      expect((protocol as any)._oauthTokens.has("cid")).toBe(true);
+      // Called with auth, so the session is cached under the auth-inclusive key.
+      expect((protocol as any)._mcpSessions.get((protocol as any)._sessionKey("s", CONFIG, auth))).toBe(client);
+      expect((protocol as any)._oauthTokens.has(tokenKey)).toBe(true);
     });
 
     test("a structured HTTP 401 classifies as auth without relying on message text", async () => {
@@ -712,5 +721,162 @@ describe("McpCommunicationProtocol", () => {
       expect(capturedOpts[0]).toEqual({ method: "listTools", opts: { timeout: 90_000 } });
       expect(capturedOpts[1]).toEqual({ method: "callTool", opts: { timeout: 90_000 } });
     });
+  });
+
+  describe("Tool result processing", () => {
+    const protocol = new McpCommunicationProtocol();
+    const processResult = (r: any) => (protocol as any)._processMcpToolResult(r);
+
+    test("prefers structuredContent over the mirrored text block", () => {
+      const result = {
+        content: [{ type: "text", text: '{"answer": 42}' }],
+        structuredContent: { answer: 42 },
+      };
+      expect(processResult(result)).toEqual({ answer: 42 });
+    });
+
+    test("returns structuredContent when content is empty instead of collapsing to []", () => {
+      expect(processResult({ content: [], structuredContent: { answer: 42 } })).toEqual({ answer: 42 });
+    });
+
+    test("unwraps a FastMCP-style single-key {result} wrapper", () => {
+      expect(processResult({ content: [{ type: "text", text: "42" }], structuredContent: { result: 42 } })).toBe(42);
+    });
+
+    test("unwraps a FastMCP-style {result} wrapper around an array", () => {
+      expect(processResult({ content: [], structuredContent: { result: ["a", "b"] } })).toEqual(["a", "b"]);
+    });
+
+    test("does not unwrap an object that merely has a result key among others", () => {
+      const structured = { result: 1, extra: 2 };
+      expect(processResult({ content: [], structuredContent: structured })).toEqual(structured);
+    });
+
+    test("does not unwrap a genuine single-key object return whose result is itself an object", () => {
+      // FastMCP only wraps non-object returns, so { result: { ... } } is a
+      // real object return from the tool and must keep its shape.
+      const structured = { result: { nested: true } };
+      expect(processResult({ content: [], structuredContent: structured })).toEqual(structured);
+    });
+
+    test("falls back to parsing text content when structuredContent is absent", () => {
+      expect(processResult({ content: [{ type: "text", text: '{"a": 1}' }] })).toEqual({ a: 1 });
+      expect(processResult({ content: [{ type: "text", text: "7" }] })).toBe(7);
+      expect(processResult({ content: [] })).toEqual([]);
+    });
+  });
+
+  describe("Schema dereferencing", () => {
+    const protocol = new McpCommunicationProtocol();
+    const deref = (s: any) => (protocol as any)._dereferenceSchema(s);
+
+    test("a circular schema dereferences into something JSON-serializable", async () => {
+      const schema = {
+        type: "object",
+        properties: { root: { $ref: "#/$defs/node" } },
+        $defs: {
+          node: {
+            type: "object",
+            properties: {
+              value: { type: "string" },
+              next: { $ref: "#/$defs/node" },
+            },
+          },
+        },
+      };
+      const out = await deref(schema);
+      // With the default `circular: true` this is a live object cycle and
+      // stringify throws; with `circular: 'ignore'` every $ref on the cycle
+      // stays a $ref string, which serializes fine.
+      expect(() => JSON.stringify(out)).not.toThrow();
+      expect(out.properties.root).toEqual({ $ref: "#/$defs/node" });
+      // The definitions the leftover $refs point at must survive so the
+      // schema remains resolvable by whoever consumes it.
+      expect(out.$defs.node.properties.value).toEqual({ type: "string" });
+      expect(out.$defs.node.properties.next).toEqual({ $ref: "#/$defs/node" });
+    });
+
+    test("acyclic refs are still inlined", async () => {
+      const schema = {
+        type: "object",
+        properties: { a: { $ref: "#/$defs/s" } },
+        $defs: { s: { type: "string" } },
+      };
+      const out = await deref(schema);
+      expect(out.properties.a).toEqual({ type: "string" });
+    });
+  });
+});
+describe("McpCommunicationProtocol session-creation coalescing", () => {
+  const CONFIG = { transport: "stdio" as const, command: "true", timeout: 60 };
+
+  test("concurrent first calls for the same server dial exactly once", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    let creations = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const fakeClient = { close: () => Promise.resolve() };
+    protocol._createSession = async () => {
+      creations += 1;
+      await gate;
+      protocol._mcpSessions.set("s:stdio", fakeClient);
+      return fakeClient;
+    };
+
+    const pending = Promise.all([
+      protocol._getOrCreateSession("s", CONFIG),
+      protocol._getOrCreateSession("s", CONFIG),
+      protocol._getOrCreateSession("s", CONFIG),
+    ]);
+    release();
+    const clients = await pending;
+
+    expect(creations).toBe(1);
+    expect(clients.every((c: any) => c === fakeClient)).toBe(true);
+    expect(protocol._sessionCreations.size).toBe(0); // slot cleared on settle
+  });
+
+  test("a later call after the creation settles dials again", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    let creations = 0;
+    protocol._createSession = async () => {
+      creations += 1;
+      return { close: () => Promise.resolve() }; // not cached, so the next call misses
+    };
+
+    await protocol._getOrCreateSession("s", CONFIG);
+    await protocol._getOrCreateSession("s", CONFIG);
+
+    expect(creations).toBe(2);
+  });
+});
+
+describe("McpCommunicationProtocol session isolation by config + auth", () => {
+  test("same server name but different config yields different session keys", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const a = protocol._sessionKey("srv", { transport: "stdio", command: "serverA" }, undefined);
+    const b = protocol._sessionKey("srv", { transport: "stdio", command: "serverB" }, undefined);
+    expect(a).not.toBe(b);
+  });
+
+  test("same server name + config but different auth yields different session keys", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const cfg = { transport: "http", url: "https://x/mcp" };
+    const a = protocol._sessionKey("srv", cfg, { auth_type: "oauth2", client_id: "a", client_secret: "s", token_url: "https://x/t" });
+    const b = protocol._sessionKey("srv", cfg, { auth_type: "oauth2", client_id: "b", client_secret: "s", token_url: "https://x/t" });
+    expect(a).not.toBe(b);
+  });
+
+  test("identical name + config + auth yields the same key (sessions still shared)", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const cfg = { transport: "stdio", command: "node" };
+    expect(protocol._sessionKey("srv", cfg, undefined)).toBe(protocol._sessionKey("srv", cfg, undefined));
+  });
+
+  test("the session key never embeds the raw secret (log-safe)", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const cfg = { transport: "http", url: "https://x/mcp" };
+    const key = protocol._sessionKey("srv", cfg, { auth_type: "oauth2", client_id: "a", client_secret: "TOPSECRET", token_url: "https://x/t" });
+    expect(key).not.toContain("TOPSECRET");
   });
 });

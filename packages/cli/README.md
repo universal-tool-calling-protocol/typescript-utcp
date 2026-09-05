@@ -509,7 +509,7 @@ const result = await client.callTool('git_commit_push', {
 
 ## Limitations
 
-- **No Streaming Support**: The CLI protocol does not support streaming. All output is returned when the command completes.
+- **No Native Streaming**: The CLI protocol does not stream output incrementally. `callToolStreaming` works, but it runs the command to completion and yields the full result as a single chunk.
 - **Platform-Specific**: Commands must be written for the target platform (Windows/Unix).
 - **No Interactive Commands**: Interactive CLI tools (that require user input) are not supported.
 - **Fixed Timeouts**: Timeout durations are currently fixed (though generous).

@@ -41,6 +41,25 @@ describe('CliCommunicationProtocol (Multi-Command)', () => {
     expect(result.trim()).toBe('Step 2');
   });
 
+  test('should emit the full result as a single chunk when called in streaming mode', async () => {
+    const callTemplate: CliCallTemplate = CliCallTemplateSchema.parse({
+      name: 'streaming_test',
+      call_template_type: 'cli',
+      commands: [
+        { command: 'echo "Step 1"', append_to_final_output: false },
+        { command: 'echo "Step 2"' },
+      ],
+    });
+
+    const chunks: any[] = [];
+    for await (const chunk of cliProtocol.callToolStreaming(mockClient, 'test.workflow', {}, callTemplate)) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toHaveLength(1);
+    expect(String(chunks[0]).trim()).toBe('Step 2');
+  });
+
   test('should preserve state (current directory) between commands', async () => {
     const tempDir = await createTempDir('state_test_dir');
     const finalCommand = isWindows ? 'Write-Output (Get-Location).Path' : 'pwd';

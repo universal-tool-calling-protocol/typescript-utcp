@@ -3,7 +3,12 @@ import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import express, { Express } from 'express';
 import { Server } from 'http';
 // Import from package index to trigger auto-registration
-import { HttpCommunicationProtocol, HttpCallTemplate } from "@utcp/http";
+import {
+  HttpCommunicationProtocol,
+  HttpCallTemplate,
+  StreamableHttpCommunicationProtocol,
+  SseCommunicationProtocol,
+} from "@utcp/http";
 import { ApiKeyAuth, BasicAuth, OAuth2Auth } from "@utcp/sdk";
 import { IUtcpClient } from "@utcp/sdk";
 
@@ -60,6 +65,46 @@ beforeAll(async () => {
 
   app.get("/error", (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
+  });
+
+  // Returns a non-2xx with a descriptive JSON body, like a real API does when it
+  // refuses a call. Used to prove callTool surfaces that body, not just the status.
+  app.post("/forbidden", (req, res) => {
+    res.status(403).json({ error: "You are not allowed to do that, and here is exactly why." });
+  });
+
+  // GET variant for the streamable/sse discovery (registerManual) error-body test.
+  app.get("/forbidden-discovery", (req, res) => {
+    res.status(403).send("discovery refused: tenant is not provisioned for streaming");
+  });
+
+  // Some APIs nest an OBJECT under `error` — the message must show its JSON,
+  // not "[object Object]".
+  app.post("/forbidden-object", (req, res) => {
+    res.status(422).json({ error: { code: "INVALID_FIELD", reason: "value out of range" } });
+  });
+
+  // A refusal with no body at all: the message must still carry a reason.
+  app.post("/forbidden-empty", (req, res) => {
+    res.status(403).end();
+  });
+
+  // A refusal with a huge body (think an HTML stack trace): messages stay bounded.
+  app.post("/forbidden-huge", (req, res) => {
+    res.status(403).type("text/plain").send("x".repeat(5000));
+  });
+  app.get("/forbidden-huge", (req, res) => {
+    res.status(403).type("text/plain").send("x".repeat(5000));
+  });
+
+  // An emoji sitting exactly on the truncation boundary of the message.
+  app.post("/forbidden-emoji-boundary", (req, res) => {
+    res.status(403).type("text/plain").send("x".repeat(1999) + "😀" + "y".repeat(50));
+  });
+
+  // A structured `error` next to a generic `message`: the structure must win.
+  app.post("/forbidden-object-then-message", (req, res) => {
+    res.status(422).json({ error: { code: "INVALID_FIELD", reason: "value out of range" }, message: "Request failed" });
   });
 
   await new Promise<void>((resolve) => {
@@ -188,5 +233,191 @@ describe("HttpCommunicationProtocol", () => {
       const result = await protocol.callTool(mockClient, "test.tool", {}, callTemplate);
       expect(result.result).toBe("success");
     });
+
+    test("should surface the server's error body, not just the status code", async () => {
+      const callTemplate: HttpCallTemplate = {
+        name: "forbidden_server",
+        call_template_type: "http",
+        url: `http://localhost:${serverPort}/forbidden`,
+        http_method: "POST",
+      };
+
+      let thrown: any;
+      try {
+        await protocol.callTool(mockClient, "test.forbidden", {}, callTemplate);
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      // The reason the server sent (not just "status code 403") must be present.
+      expect(thrown.message).toContain("You are not allowed to do that, and here is exactly why.");
+      expect(thrown.message).toContain("403");
+      // Enumerable status/data survive structured serialization out of a sandbox.
+      expect(thrown.status).toBe(403);
+      expect(thrown.data).toEqual({ error: "You are not allowed to do that, and here is exactly why." });
+      const roundTripped = JSON.parse(JSON.stringify(thrown));
+      expect(roundTripped.status).toBe(403);
+      expect(roundTripped.data).toEqual({ error: "You are not allowed to do that, and here is exactly why." });
+    });
+
+    test("should JSON-stringify an object-valued error field, not '[object Object]'", async () => {
+      const callTemplate: HttpCallTemplate = {
+        name: "forbidden_object_server",
+        call_template_type: "http",
+        url: `http://localhost:${serverPort}/forbidden-object`,
+        http_method: "POST",
+      };
+
+      let thrown: any;
+      try {
+        await protocol.callTool(mockClient, "test.forbidden_object", {}, callTemplate);
+      } catch (e) {
+        thrown = e;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown.message).not.toContain("[object Object]");
+      // The structured detail survives in the message...
+      expect(thrown.message).toContain("INVALID_FIELD");
+      expect(thrown.message).toContain("value out of range");
+      // ...and the raw object is preserved on `data`.
+      expect(thrown.status).toBe(422);
+      expect(thrown.data).toEqual({ error: { code: "INVALID_FIELD", reason: "value out of range" } });
+    });
+  });
+});
+
+// Discovery (registerManual) for the streamable/sse protocols must surface the
+// server's body on failure, not just "HTTP 403: Forbidden".
+describe("discovery error body (streamable_http + sse)", () => {
+  test("StreamableHttpCommunicationProtocol.registerManual surfaces the server body", async () => {
+    const protocol = new StreamableHttpCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "forbidden_stream",
+      call_template_type: "streamable_http",
+      url: `http://localhost:${serverPort}/forbidden-discovery`,
+      http_method: "GET",
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
+    expect(result.errors[0]).toContain("403");
+  });
+
+  test("SseCommunicationProtocol.registerManual surfaces the server body", async () => {
+    const protocol = new SseCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "forbidden_sse",
+      call_template_type: "sse",
+      url: `http://localhost:${serverPort}/forbidden-discovery`,
+    } as any);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
+    expect(result.errors[0]).toContain("403");
+  });
+});
+
+describe("path parameters", () => {
+  test("repeated and ${param}-style path parameters are all substituted", async () => {
+    const protocol = new HttpCommunicationProtocol();
+    const result = await protocol.callTool(mockClient, "test.path", { p: "x", extra: "1" }, {
+      name: "path_server",
+      call_template_type: "http",
+      url: `http://localhost:${serverPort}/tool/{p}/\${p}`,
+      http_method: "GET",
+    } as any);
+    expect(result.result).toBe("path_success");
+    expect(result.params).toEqual({ param1: "x", param2: "x" });
+    expect(result.query).toEqual({ extra: "1" });
+  });
+});
+
+describe("error body edge cases", () => {
+  const callForbidden = async (path: string) => {
+    const protocol = new HttpCommunicationProtocol();
+    try {
+      await protocol.callTool(mockClient, "test.forbidden", {}, {
+        name: "forbidden_server",
+        call_template_type: "http",
+        url: `http://localhost:${serverPort}${path}`,
+        http_method: "POST",
+      } as any);
+    } catch (e) {
+      return e as any;
+    }
+    throw new Error("expected the call to fail");
+  };
+
+  test("the original axios error stays reachable but out of JSON serialization", async () => {
+    const thrown = await callForbidden("/forbidden");
+    expect(thrown.response.status).toBe(403);
+    expect(thrown.cause).toBeDefined();
+    const roundTripped = JSON.parse(JSON.stringify(thrown));
+    expect(roundTripped.status).toBe(403);
+    expect("response" in roundTripped).toBe(false);
+    expect("cause" in roundTripped).toBe(false);
+  });
+
+  test("registerManual surfaces the server's error body too", async () => {
+    const protocol = new HttpCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "forbidden_http",
+      call_template_type: "http",
+      url: `http://localhost:${serverPort}/forbidden-discovery`,
+      http_method: "GET",
+    } as any);
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain("403");
+    expect(result.errors[0]).toContain("discovery refused: tenant is not provisioned for streaming");
+  });
+
+  test("a blank error body falls back to the status text instead of a bare colon", async () => {
+    const thrown = await callForbidden("/forbidden-empty");
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown.status).toBe(403);
+    expect(thrown.message).toContain("403");
+    expect(thrown.message).toContain("Forbidden");
+    expect(thrown.message.trimEnd().endsWith(":")).toBe(false);
+  });
+
+  test("a structured error field wins over a lower-priority generic message", async () => {
+    const thrown = await callForbidden("/forbidden-object-then-message");
+    expect(thrown.status).toBe(422);
+    expect(thrown.message).toContain("INVALID_FIELD");
+    expect(thrown.message).toContain("value out of range");
+    expect(thrown.message).not.toContain("[object Object]");
+  });
+
+  test("truncation never splits a surrogate pair", async () => {
+    const thrown = await callForbidden("/forbidden-emoji-boundary");
+    expect(thrown.status).toBe(403);
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(loneSurrogate.test(thrown.message)).toBe(false);
+    expect(thrown.message).toContain("😀");
+    expect(thrown.message).toContain("…");
+  });
+
+  test("a huge error body is truncated in the message but kept in full on data", async () => {
+    const thrown = await callForbidden("/forbidden-huge");
+    expect(thrown.status).toBe(403);
+    expect(thrown.message.length).toBeLessThan(2500);
+    expect(thrown.data).toHaveLength(5000);
+  });
+
+  test("a huge discovery error body is truncated in errors[]", async () => {
+    const protocol = new StreamableHttpCommunicationProtocol();
+    const result = await protocol.registerManual(mockClient, {
+      name: "huge_stream",
+      call_template_type: "streamable_http",
+      url: `http://localhost:${serverPort}/forbidden-huge`,
+      http_method: "GET",
+    } as any);
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain("403");
+    expect(result.errors[0].length).toBeLessThan(400);
   });
 });

@@ -1,4 +1,5 @@
 // packages/mcp/src/mcp_communication_protocol.ts
+import { createHash } from 'crypto';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -107,15 +108,26 @@ function isMcpToolsResponse(data: unknown): data is { tools: McpToolResponse[] }
 export class McpCommunicationProtocol implements CommunicationProtocol {
   private _oauthTokens: Map<string, { accessToken: string; expiresAt: number }> = new Map();
   /**
-   * Per-client invalidation counter. A token fetch captures the generation
-   * when it starts and only caches its result if nothing invalidated the
-   * client in the meantime — otherwise an in-flight fetch that began before
-   * a 401 would repopulate the cache right after `_invalidateOAuthToken`
-   * cleared it.
+   * In-flight token fetches, keyed like the token cache (by the full OAuth
+   * configuration). At most one entry per key, and that entry is the SOLE
+   * authority for who may write the cache: a fetch caches its result only if
+   * it is still the current entry when it completes, and removes itself only
+   * if still current. Invalidation and close() simply delete the entry, so a
+   * fetch that was already running finds it is no longer current and declines
+   * to cache — there is no version counter to coordinate or leak, and nothing
+   * keyed by the secret outlives an actual in-flight fetch. A burst of
+   * concurrent first-time callers shares the one entry. (Promises are not
+   * cancellable in JS, so unlike the Python plugin no shielding is needed.)
    */
-  private _oauthGenerations: Map<string, number> = new Map();
+  private _oauthInflight: Map<string, { promise: Promise<{ accessToken: string; expiresAt: number }> }> = new Map();
   private _axiosInstance: AxiosInstance;
   private _mcpSessions: Map<string, McpClient> = new Map();
+  /**
+   * In-flight session creations, keyed by sessionKey. Concurrent first calls
+   * for the same server share one dial instead of each spawning a transport and
+   * orphaning all but the last (which `_mcpSessions.set` would silently drop).
+   */
+  private _sessionCreations: Map<string, Promise<McpClient>> = new Map();
   /**
    * `close()` is a DRAIN, not a terminal state. This instance is registered
    * once at module load (`index.ts`) into the process-wide
@@ -173,8 +185,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
         return schema as JsonSchema;
       }
       
-      // Dereference the schema (inlines all $refs and $defs)
-      const dereferenced = await $RefParser.dereference(schema as any);
+      // Dereference the schema (inlines all $refs and $defs). `circular:
+      // 'ignore'` keeps recursive schemas (e.g. self-referencing filter
+      // grammars) from throwing — the cycle is left as a live reference
+      // instead of failing the whole tool discovery.
+      const dereferenced = await $RefParser.dereference(schema as any, {
+        dereference: { circular: 'ignore' },
+      });
       return dereferenced as JsonSchema;
     } catch (error: any) {
       // If dereferencing fails, log a warning and return the original schema
@@ -221,18 +238,67 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
    */
   private _invalidateOAuthToken(auth: Auth | undefined): void {
     if (!auth || auth.auth_type === 'oauth2_user') return;
-    const clientId = (auth as OAuth2Auth).client_id;
+    const oauth = auth as OAuth2Auth;
+    const clientId = oauth.client_id;
     if (!clientId) return;
-    // Bump the generation whether or not a token was cached: a fetch may be
-    // in flight right now, and it must not cache what it brings back.
-    this._oauthGenerations.set(clientId, this._oauthGeneration(clientId) + 1);
-    if (this._oauthTokens.delete(clientId)) {
+    const cacheKey = this._oauthCacheKey(oauth);
+    // Drop the in-flight entry: a fetch running under it is no longer current,
+    // so by the caching rule (see _oauthInflight) it will not write its
+    // pre-invalidation result, and callers from now on dial fresh.
+    this._oauthInflight.delete(cacheKey);
+    if (this._oauthTokens.delete(cacheKey)) {
       this._logInfo(`Dropped cached OAuth token for client '${clientId}' after an auth rejection.`);
     }
   }
 
-  private _oauthGeneration(clientId: string): number {
-    return this._oauthGenerations.get(clientId) ?? 0;
+  /**
+   * The one rule for what may enter the token cache. Defined POSITIVELY from
+   * the contract the token must satisfy, not as a list of bad shapes: it is
+   * placed verbatim into `Authorization: Bearer <token>`, and an HTTP header
+   * value may contain only visible ASCII (RFC 9110 VCHAR, 0x21–0x7E), with a
+   * space ending the token. So a usable token is a non-empty string of VCHAR.
+   * That single rule makes every unusable shape inexpressible at once — a
+   * non-string, empty, whitespace, CR/LF header injection, NUL/control
+   * characters, non-ASCII — without over-fitting to RFC 6750's narrower
+   * b64token alphabet, which would reject legitimate opaque tokens.
+   * Both fetch variants go through this, so the rule lives in one place.
+   */
+  private _requireAccessToken(data: any): string {
+    const token = data?.access_token;
+    if (typeof token !== 'string' || !/^[\x21-\x7E]+$/.test(token)) {
+      throw new Error("Access token missing, or not a usable bearer token (must be a non-empty string of visible ASCII).");
+    }
+    return token;
+  }
+
+  /**
+   * Key for every per-credential OAuth structure (token cache, in-flight
+   * fetch). Keyed by the FULL configuration, not `client_id` alone: two
+   * templates may share a client_id but point at different issuers, scopes or
+   * secrets, and must not receive each other's tokens. Matches the HTTP
+   * plugin's cache key. Carries the secret, so it is used only as a map key
+   * and never logged.
+   */
+  private _oauthCacheKey(auth: OAuth2Auth): string {
+    return JSON.stringify([auth.token_url, auth.client_id, auth.client_secret, auth.scope || '']);
+  }
+
+  /**
+   * Identity of a cached session. This protocol instance is shared
+   * process-wide, so keying by server name alone would let two manuals that
+   * name a server the same (e.g. "github") share a session even when their
+   * configs or credentials differ — one manual's calls would then run against
+   * the other's server or token. Include the config and auth so distinct
+   * connections get distinct sessions (mirrors python-utcp keying clients by
+   * config + auth). The config and auth are HASHED, not embedded, so the key
+   * stays log-safe and never exposes a secret.
+   */
+  private _sessionKey(serverName: string, serverConfig: McpServerConfig, auth?: Auth): string {
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ config: serverConfig, auth: auth ?? null }))
+      .digest('hex')
+      .slice(0, 16);
+    return `${serverName}:${serverConfig.transport}:${fingerprint}`;
   }
 
   private async _getOrCreateSession(
@@ -240,7 +306,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     serverConfig: McpServerConfig,
     auth?: Auth
   ): Promise<McpClient> {
-    const sessionKey = `${serverName}:${serverConfig.transport}`;
+    const sessionKey = this._sessionKey(serverName, serverConfig, auth);
 
     // Check if we have an existing session
     if (this._mcpSessions.has(sessionKey)) {
@@ -249,6 +315,29 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       return existingSession;
     }
 
+    // Coalesce concurrent creations for the same key: without this, a burst of
+    // first calls each dials a transport and all but the last are orphaned
+    // (never closed). Cleared on settle so a later miss — including a retry
+    // after eviction — dials fresh.
+    const inflight = this._sessionCreations.get(sessionKey);
+    if (inflight) return inflight;
+    const creation = this._createSession(serverName, serverConfig, auth, sessionKey);
+    this._sessionCreations.set(sessionKey, creation);
+    const forget = () => {
+      if (this._sessionCreations.get(sessionKey) === creation) {
+        this._sessionCreations.delete(sessionKey);
+      }
+    };
+    creation.then(forget, forget);
+    return creation;
+  }
+
+  private async _createSession(
+    serverName: string,
+    serverConfig: McpServerConfig,
+    auth: Auth | undefined,
+    sessionKey: string,
+  ): Promise<McpClient> {
     // Worded without the transient markers ("closed", "disconnected") on
     // purpose, so `_withSession` does not classify shutdown as a transport
     // hiccup and spend a retry on it.
@@ -273,6 +362,12 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
         args: stdioConfig.args || [],
         cwd: stdioConfig.cwd,
         env: combinedEnv,
+        // Default the child's stderr to 'ignore' so a chatty MCP server does
+        // not flood the host terminal during discovery. NOT 'pipe': with no
+        // reader attached the OS pipe buffer fills and a verbose child
+        // deadlocks. Set UTCP_MCP_CHILD_STDERR=inherit to see child stderr
+        // when debugging.
+        stderr: process.env.UTCP_MCP_CHILD_STDERR === 'inherit' ? 'inherit' : 'ignore',
       });
 
     } else if (serverConfig.transport === 'http') {
@@ -353,6 +448,20 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     } catch (e: any) {
       // If connection fails, don't cache the broken client
       this._logError(`Failed to connect MCP client for '${sessionKey}':`, e.message);
+      // Only hint when the child actually failed to start. A close() that
+      // raced with this connect throws our own shutdown error above, and
+      // that is not something stderr would explain.
+      if (
+        serverConfig.transport === 'stdio' &&
+        process.env.UTCP_MCP_CHILD_STDERR !== 'inherit' &&
+        this._activeDrains === 0 &&
+        this._closeGeneration === closeGenerationAtStart
+      ) {
+        this._logError(
+          `The child's stderr was suppressed. If startup output may explain this, re-run with ` +
+          `UTCP_MCP_CHILD_STDERR=inherit to see what '${sessionKey}' printed while starting.`,
+        );
+      }
       throw e;
     }
     
@@ -487,7 +596,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     auth: Auth | undefined,
     operation: (client: McpClient) => Promise<T>
   ): Promise<T> {
-    const sessionKey = `${serverName}:${serverConfig.transport}`;
+    const sessionKey = this._sessionKey(serverName, serverConfig, auth);
     const timeoutMs = this._getTimeoutMs(serverConfig);
     // Hoisted so the catch arms can hand the SPECIFIC client that failed to
     // `_cleanupSession` — a key-only eviction would close whatever a
@@ -658,6 +767,18 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       const cleanupPromises = Array.from(this._mcpSessions.keys()).map(key => this._cleanupSession(key));
       await Promise.all(cleanupPromises);
       this._oauthTokens.clear();
+      // Drop in-flight OAuth entries too. A fetch still running is then no
+      // longer current, so by the caching rule (see _oauthInflight) it will
+      // not repopulate the cache when it lands — the drain leaves no
+      // credential behind. (JS promises can't be cancelled; correctness comes
+      // from the identity gate, not from stopping the request.)
+      this._oauthInflight.clear();
+      // Pending session creations are dropped for the same reason. A dial that
+      // began before this drain will reject with the shutdown error on its own;
+      // without this, a call arriving after the drain could join that doomed
+      // promise instead of dialing fresh. The settle handler's identity guard
+      // means the old promise cannot clobber a newer entry.
+      this._sessionCreations.clear();
     } finally {
       // Drain complete — the shared registry instance stays usable. This
       // instance serves every UtcpClient in the process (see the field
@@ -672,7 +793,19 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   
   private _processMcpToolResult(result: any): any {
     if (result && typeof result === 'object') {
-      if ('structured_output' in result) {
+      // Prefer `structuredContent` (MCP spec field) whenever the server sent
+      // it. Spec-compliant servers also mirror it as a serialized text block
+      // in `content` for older clients, and re-parsing that text is lossy: a
+      // numeric-looking string becomes a number, unparsable JSON stays a
+      // string. Using the structured payload directly also covers servers
+      // that return an empty `content` array with only `structuredContent`,
+      // which previously collapsed to []. Matches the Python SDK.
+      if (result.structuredContent != null) {
+        return this._unwrapStructuredContent(result.structuredContent);
+      }
+      // Legacy, non-standard field this client accepted before 1.2; kept so a
+      // server relying on it does not silently regress.
+      if (result.structured_output != null) {
         return result.structured_output;
       }
       if (Array.isArray(result.content)) {
@@ -688,6 +821,34 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     return result;
   }
 
+  /**
+   * FastMCP-style servers wrap NON-OBJECT tool returns (primitives, arrays,
+   * null) as `{ result: value }` so that `structuredContent` is always an
+   * object; object returns are sent as-is. Unwrap exactly that shape: a
+   * single `result` key whose value is not a plain object. A single-key
+   * `{ result: { ... } }` is therefore a genuine object return and passes
+   * through untouched, as does any object with other keys. A genuine
+   * `{ result: <primitive or array> }` return is indistinguishable from the
+   * wrapper on the wire and is unwrapped too; that ambiguity is inherent to
+   * the FastMCP convention.
+   */
+  private _unwrapStructuredContent(structured: any): any {
+    if (
+      structured &&
+      typeof structured === 'object' &&
+      !Array.isArray(structured) &&
+      Object.keys(structured).length === 1 &&
+      'result' in structured
+    ) {
+      const inner = structured.result;
+      const innerIsPlainObject = inner !== null && typeof inner === 'object' && !Array.isArray(inner);
+      if (!innerIsPlainObject) {
+        return inner;
+      }
+    }
+    return structured;
+  }
+
   private _parseTextContent(text: string): any {
     try {
       return JSON.parse(text);
@@ -701,49 +862,83 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   }
   
   private async _handleOAuth2(authDetails: OAuth2Auth): Promise<string> {
-    const clientId = authDetails.client_id;
-    const cachedToken = this._oauthTokens.get(clientId);
+    // Validate the token endpoint before sending credentials to it, so a
+    // manual cannot direct the operator's client secret at an arbitrary host.
+    // Validation covers only this URL, so the credential-bearing POSTs below
+    // disable redirects (maxRedirects: 0) — a 307/308 would otherwise let axios
+    // replay the client secret to an unvalidated redirect target.
+    ensureSecureMcpUrl(authDetails.token_url, 'MCP OAuth2 token URL');
+    const cacheKey = this._oauthCacheKey(authDetails);
+    const cachedToken = this._oauthTokens.get(cacheKey);
     if (cachedToken && cachedToken.expiresAt > Date.now()) {
       return cachedToken.accessToken;
     }
 
+    // Coalesce concurrent first-time fetches: share one in-flight entry per
+    // credential configuration. The entry is the sole authority for caching
+    // (see _oauthInflight): the fetch below writes the cache only if it is
+    // STILL the current entry when it lands, and removes itself only if still
+    // current. The check-and-set is synchronous, so exactly one fetch starts.
+    let entry = this._oauthInflight.get(cacheKey);
+    if (!entry) {
+      const created: { promise: Promise<{ accessToken: string; expiresAt: number }> } = { promise: undefined as any };
+      created.promise = (async () => {
+        try {
+          const token = await this._fetchOAuth2Token(authDetails);
+          if (this._oauthInflight.get(cacheKey) === created) {
+            this._oauthTokens.set(cacheKey, token);
+          } else {
+            this._logInfo(`OAuth token for client '${authDetails.client_id}' was invalidated or drained while its fetch was in flight; not caching the stale result.`);
+          }
+          return token;
+        } finally {
+          // Only a still-current entry removes itself; a superseded one must
+          // not delete its successor's slot.
+          if (this._oauthInflight.get(cacheKey) === created) {
+            this._oauthInflight.delete(cacheKey);
+          }
+        }
+      })();
+      entry = created;
+      this._oauthInflight.set(cacheKey, created);
+    }
+    const token = await entry.promise;
+    return token.accessToken;
+  }
+
+  private async _fetchOAuth2Token(authDetails: OAuth2Auth): Promise<{ accessToken: string; expiresAt: number }> {
+    const clientId = authDetails.client_id;
     this._logInfo(`Fetching new OAuth2 token for client: '${clientId}'`);
-    const generation = this._oauthGeneration(clientId);
 
     try {
-      // Only the WINNER of the race caches — previously each variant wrote
-      // the cache on its own success, so the slower one landed later and
-      // overwrote whatever was there, including an invalidation that
-      // happened in between. And even the winner only caches if nothing
-      // invalidated this client while the fetch was in flight.
+      // Pure fetch: race the two request shapes and return the winner. This
+      // never writes the cache — whether the result may be cached is decided
+      // by _handleOAuth2, which knows whether this fetch is still the current
+      // in-flight entry when it lands.
       const token = await Promise.any([
         (async () => {
           const bodyData = new URLSearchParams({
             'grant_type': 'client_credentials', 'client_id': authDetails.client_id,
             'client_secret': authDetails.client_secret, 'scope': authDetails.scope || ''
           });
-          const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-          if (!response.data.access_token) throw new Error("Access token not found in response.");
+          const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, maxRedirects: 0 });
+          const accessToken = this._requireAccessToken(response.data);
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
-          return { accessToken: response.data.access_token as string, expiresAt };
+          return { accessToken, expiresAt };
         })(),
         (async () => {
           const bodyData = new URLSearchParams({ 'grant_type': 'client_credentials', 'scope': authDetails.scope || '' });
           const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), {
             auth: { username: authDetails.client_id, password: authDetails.client_secret },
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            maxRedirects: 0
           });
-          if (!response.data.access_token) throw new Error("Access token not found in response.");
+          const accessToken = this._requireAccessToken(response.data);
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
-          return { accessToken: response.data.access_token as string, expiresAt };
+          return { accessToken, expiresAt };
         })()
       ]);
-      if (this._oauthGeneration(clientId) === generation) {
-        this._oauthTokens.set(clientId, token);
-      } else {
-        this._logInfo(`OAuth token for client '${clientId}' was invalidated while a fetch was in flight; not caching the stale result.`);
-      }
-      return token.accessToken;
+      return token;
     } catch (aggregateError: any) {
       const errorMessages = aggregateError.errors?.map((e: Error) => e.message).join('; ') || String(aggregateError);
       throw new Error(`Failed to fetch OAuth2 token for client '${clientId}': ${errorMessages}`);
