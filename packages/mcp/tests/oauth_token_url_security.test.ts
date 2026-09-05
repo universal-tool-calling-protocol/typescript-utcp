@@ -96,3 +96,60 @@ describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
     expect(calls).toBe(1);
   });
 });
+
+describe("McpCommunicationProtocol OAuth2 generation lifecycle", () => {
+  const auth = { auth_type: "oauth2", token_url: "https://x/token", client_id: "cid", client_secret: "s", scope: "" };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  test("invalidating with nothing in flight leaves no generation entry", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    protocol._invalidateOAuthToken(auth);
+    expect(protocol._oauthGenerations.size).toBe(0);
+  });
+
+  test("a settled fetch prunes its in-flight entry and generation", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    protocol._axiosInstance = { post: async () => ({ data: { access_token: "tok", expires_in: 3600 } }) };
+    await protocol._handleOAuth2(auth);
+    await tick(); // let the settle handler run
+    expect(protocol._oauthInflight.size).toBe(0);
+    expect(protocol._oauthGenerations.size).toBe(0);
+  });
+
+  test("invalidated twice mid-flight still never caches the stale token, then prunes", async () => {
+    // The obvious approach (bump only if an in-flight map entry exists) breaks
+    // here: after the first invalidation removed the entry, a second one would
+    // see nothing in flight, prune the counter, and let the stale fetch cache.
+    const protocol: any = new McpCommunicationProtocol();
+    let resolveFetch!: (v: any) => void;
+    const pending = new Promise<any>((res) => { resolveFetch = res; });
+    protocol._axiosInstance = { post: () => pending };
+
+    const fetching = protocol._handleOAuth2(auth);
+    protocol._invalidateOAuthToken(auth);
+    protocol._invalidateOAuthToken(auth); // a second rejection before the fetch lands
+    resolveFetch({ data: { access_token: "stale", expires_in: 3600 } });
+
+    await expect(fetching).resolves.toBe("stale");
+    await tick();
+    expect(protocol._oauthTokens.size).toBe(0);
+    expect(protocol._oauthGenerations.size).toBe(0);
+    expect(protocol._oauthInflight.size).toBe(0);
+  });
+
+  test("a caller arriving after a mid-flight invalidation dials fresh instead of joining", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    let fetches = 0;
+    const gates: Array<(v: any) => void> = [];
+    protocol._fetchOAuth2Token = () => { fetches += 1; return new Promise((res) => gates.push(res)); };
+
+    const first = protocol._handleOAuth2(auth);   // fetch #1 in flight
+    protocol._invalidateOAuthToken(auth);          // its generation is now stale
+    const second = protocol._handleOAuth2(auth);  // must NOT join fetch #1
+    expect(fetches).toBe(2);
+
+    const tok = { accessToken: "tok", expiresAt: Date.now() + 3_600_000 };
+    gates.forEach((g) => g(tok));
+    expect(await Promise.all([first, second])).toEqual(["tok", "tok"]);
+  });
+});

@@ -108,12 +108,15 @@ function isMcpToolsResponse(data: unknown): data is { tools: McpToolResponse[] }
 export class McpCommunicationProtocol implements CommunicationProtocol {
   private _oauthTokens: Map<string, { accessToken: string; expiresAt: number }> = new Map();
   /**
-   * In-flight token fetches, keyed like the token cache (by client_id). A burst
-   * of concurrent first-time callers shares one request instead of each POSTing
-   * to the token endpoint. (Promises are not cancellable in JS, so unlike the
-   * Python plugin no shielding is needed — extra awaiters cannot abort the fetch.)
+   * In-flight token fetches, keyed like the token cache (by the full OAuth
+   * configuration). A burst of concurrent first-time callers shares one request
+   * instead of each POSTing to the token endpoint. Each entry is tagged with the
+   * invalidation generation it started under, and an entry is removed ONLY
+   * when its fetch settles — so "entry present" reliably means "a fetch is
+   * running", which `_invalidateOAuthToken` relies on. (Promises are not
+   * cancellable in JS, so unlike the Python plugin no shielding is needed.)
    */
-  private _oauthInflight: Map<string, Promise<{ accessToken: string; expiresAt: number }>> = new Map();
+  private _oauthInflight: Map<string, { promise: Promise<{ accessToken: string; expiresAt: number }>; generation: number }> = new Map();
   /**
    * Per-client invalidation counter. A token fetch captures the generation
    * when it starts and only caches its result if nothing invalidated the
@@ -244,15 +247,20 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     const clientId = oauth.client_id;
     if (!clientId) return;
     const cacheKey = this._oauthCacheKey(oauth);
-    // Bump the generation whether or not a token was cached: a fetch may be
-    // in flight right now, and it must not cache what it brings back.
-    this._oauthGenerations.set(cacheKey, this._oauthGeneration(cacheKey) + 1);
-    // Drop any pending shared fetch too, so a caller arriving after the
-    // rejection starts a fresh fetch instead of joining the pre-invalidation
-    // one and receiving its now-rejected token.
-    this._oauthInflight.delete(cacheKey);
     if (this._oauthTokens.delete(cacheKey)) {
       this._logInfo(`Dropped cached OAuth token for client '${clientId}' after an auth rejection.`);
+    }
+    if (this._oauthInflight.has(cacheKey)) {
+      // A fetch is running (entries are only removed on settle, so this is a
+      // reliable signal). Bump the generation: the fetch's captured value no
+      // longer matches, so it won't cache its result, and callers arriving
+      // from now on see a stale tag and dial fresh instead of joining it. The
+      // counter is pruned when that fetch settles.
+      this._oauthGenerations.set(cacheKey, this._oauthGeneration(cacheKey) + 1);
+    } else {
+      // Nothing in flight, so there is no stale result to guard against; don't
+      // leave a counter (whose key carries the secret) behind.
+      this._oauthGenerations.delete(cacheKey);
     }
   }
 
@@ -756,11 +764,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       const cleanupPromises = Array.from(this._mcpSessions.keys()).map(key => this._cleanupSession(key));
       await Promise.all(cleanupPromises);
       this._oauthTokens.clear();
-      // Drop references to any in-flight fetches; they self-remove on settle,
-      // and JS promises can't be cancelled, so this only avoids a brief dangling
-      // entry after a drain.
-      this._oauthInflight.clear();
-      // Likewise drop pending session creations. A dial that began before this
+      // In-flight OAuth fetches and their generation counters are deliberately
+      // NOT cleared here: an entry is the signal that a fetch is still running
+      // (see _oauthInflight), and both self-prune when it settles. Clearing them
+      // would let a post-drain invalidation misjudge a still-running fetch as
+      // absent and prune the counter it depends on.
+      //
+      // Pending session creations ARE dropped. A dial that began before this
       // drain will reject with the shutdown error on its own; without this, a
       // call arriving after the drain could join that doomed promise instead of
       // dialing fresh. The settle handler's identity guard means the old
@@ -862,23 +872,34 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     }
 
     // Coalesce concurrent first-time fetches: share one in-flight request per
-    // credential configuration so a burst of callers issues a single token
-    // request. The check-and-set is synchronous, so exactly one fetch is started.
-    let inflight = this._oauthInflight.get(cacheKey);
-    if (!inflight) {
-      inflight = this._fetchOAuth2Token(authDetails);
-      this._oauthInflight.set(cacheKey, inflight);
+    // credential configuration. A caller only joins an entry from the CURRENT
+    // generation; a fetch invalidated mid-flight keeps running (its result is
+    // simply not cached) while later callers dial fresh. The check-and-set is
+    // synchronous, so exactly one fetch is started per generation.
+    const generation = this._oauthGeneration(cacheKey);
+    let entry = this._oauthInflight.get(cacheKey);
+    if (!entry || entry.generation !== generation) {
+      const promise = this._fetchOAuth2Token(authDetails);
+      entry = { promise, generation };
+      this._oauthInflight.set(cacheKey, entry);
       // Clear the slot once settled so a later miss re-fetches. The handler
       // never rethrows, so it does not create an unhandled rejection; callers
-      // still observe the original promise's rejection via `await inflight`.
+      // still observe the original promise's rejection via `await`.
       const forget = () => {
-        if (this._oauthInflight.get(cacheKey) === inflight) {
+        if (this._oauthInflight.get(cacheKey) === entry) {
           this._oauthInflight.delete(cacheKey);
         }
+        // With no fetch left in flight for this key the generation counter has
+        // nothing to protect — drop it, so rotating credentials don't
+        // accumulate counters (whose keys carry the secret) for the lifetime
+        // of this shared instance.
+        if (!this._oauthInflight.has(cacheKey)) {
+          this._oauthGenerations.delete(cacheKey);
+        }
       };
-      inflight.then(forget, forget);
+      promise.then(forget, forget);
     }
-    const token = await inflight;
+    const token = await entry.promise;
     return token.accessToken;
   }
 
