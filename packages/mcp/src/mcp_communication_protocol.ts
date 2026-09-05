@@ -252,17 +252,21 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   }
 
   /**
-   * The one rule for what may enter the token cache: a successful HTTP
-   * response is not a successful token fetch unless it carries a USABLE
-   * access token, i.e. a non-empty string. The transport formats whatever it
-   * is given into `Bearer <token>`, so a truthy non-string (a number, `true`,
-   * an object) would be injected as an invalid credential on every reuse.
+   * The one rule for what may enter the token cache. Defined POSITIVELY from
+   * the contract the token must satisfy, not as a list of bad shapes: it is
+   * placed verbatim into `Authorization: Bearer <token>`, and an HTTP header
+   * value may contain only visible ASCII (RFC 9110 VCHAR, 0x21–0x7E), with a
+   * space ending the token. So a usable token is a non-empty string of VCHAR.
+   * That single rule makes every unusable shape inexpressible at once — a
+   * non-string, empty, whitespace, CR/LF header injection, NUL/control
+   * characters, non-ASCII — without over-fitting to RFC 6750's narrower
+   * b64token alphabet, which would reject legitimate opaque tokens.
    * Both fetch variants go through this, so the rule lives in one place.
    */
   private _requireAccessToken(data: any): string {
     const token = data?.access_token;
-    if (typeof token !== 'string' || token.length === 0) {
-      throw new Error("Access token not found in response, or not a usable string.");
+    if (typeof token !== 'string' || !/^[\x21-\x7E]+$/.test(token)) {
+      throw new Error("Access token missing, or not a usable bearer token (must be a non-empty string of visible ASCII).");
     }
     return token;
   }

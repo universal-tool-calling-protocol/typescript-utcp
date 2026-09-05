@@ -96,16 +96,36 @@ describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
     expect(calls).toBe(1);
   });
 
-  test("an access_token that is not a non-empty string is a failed fetch and is never cached", async () => {
-    // A truthy non-string would be formatted into `Bearer 12345` and injected as
-    // an invalid credential on every reuse. A bare `!x` check lets it through,
-    // so this test fails if the string requirement is removed.
-    const protocol: any = new McpCommunicationProtocol();
-    protocol._axiosInstance = { post: async () => ({ data: { access_token: 12345, expires_in: 3600 } }) };
+  // The usability rule is positive (non-empty visible ASCII), so every shape
+  // that cannot be a valid `Authorization: Bearer <token>` header is rejected
+  // by one rule. Each case here fails if the VCHAR requirement is removed.
+  const unusableTokens: Array<[string, unknown]> = [
+    ["a number", 12345],
+    ["an empty string", ""],
+    ["an embedded space", "tok en"],
+    ["a CR/LF (header injection)", "tok\r\nen"],
+    ["a NUL/control character", "tok\u0000en"],
+    ["non-ASCII", "tok\u00e9n"],
+  ];
+  for (const [label, value] of unusableTokens) {
+    test(`an access_token that is ${label} is a failed fetch and is never cached`, async () => {
+      const protocol: any = new McpCommunicationProtocol();
+      protocol._axiosInstance = { post: async () => ({ data: { access_token: value, expires_in: 3600 } }) };
 
-    await expect(protocol._handleOAuth2(auth("https://auth.example.com/token"))).rejects.toThrow("usable");
-    expect(protocol._oauthTokens.size).toBe(0);
-    expect(protocol._oauthInflight.size).toBe(0); // the failed fetch released its slot
+      await expect(protocol._handleOAuth2(auth("https://auth.example.com/token"))).rejects.toThrow("usable");
+      expect(protocol._oauthTokens.size).toBe(0);
+      expect(protocol._oauthInflight.size).toBe(0); // the failed fetch released its slot
+    });
+  }
+
+  test("a token of printable punctuation is accepted (the rule must not over-reject real tokens)", async () => {
+    // Guards the opposite failure: tightening to RFC 6750's b64token alphabet
+    // would reject legitimate opaque tokens containing e.g. ':'.
+    const protocol: any = new McpCommunicationProtocol();
+    const value = "a.b-c_d~e+f/g=:h";
+    protocol._axiosInstance = { post: async () => ({ data: { access_token: value, expires_in: 3600 } }) };
+
+    expect(await protocol._handleOAuth2(auth("https://auth.example.com/token"))).toBe(value);
   });
 });
 
