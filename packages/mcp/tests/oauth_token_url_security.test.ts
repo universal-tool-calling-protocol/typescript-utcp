@@ -97,29 +97,31 @@ describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
   });
 });
 
-describe("McpCommunicationProtocol OAuth2 generation lifecycle", () => {
+describe("McpCommunicationProtocol OAuth2 in-flight identity lifecycle", () => {
+  // The in-flight entry is the sole authority for who may write the cache. A
+  // fetch caches only if it is still the current entry when it lands, and
+  // removes itself only if still current. There is no version counter.
   const auth = { auth_type: "oauth2", token_url: "https://x/token", client_id: "cid", client_secret: "s", scope: "" };
   const tick = () => new Promise((r) => setTimeout(r, 0));
+  const tok = (v: string) => ({ accessToken: v, expiresAt: Date.now() + 3_600_000 });
+  const cached = (protocol: any) => protocol._oauthTokens.get(protocol._oauthCacheKey(auth))?.accessToken;
 
-  test("invalidating with nothing in flight leaves no generation entry", () => {
+  test("invalidating with nothing in flight leaves no state behind", () => {
     const protocol: any = new McpCommunicationProtocol();
     protocol._invalidateOAuthToken(auth);
-    expect(protocol._oauthGenerations.size).toBe(0);
+    expect(protocol._oauthInflight.size).toBe(0);
+    expect(protocol._oauthTokens.size).toBe(0);
   });
 
-  test("a settled fetch prunes its in-flight entry and generation", async () => {
+  test("a settled fetch caches and removes its own in-flight entry", async () => {
     const protocol: any = new McpCommunicationProtocol();
     protocol._axiosInstance = { post: async () => ({ data: { access_token: "tok", expires_in: 3600 } }) };
-    await protocol._handleOAuth2(auth);
-    await tick(); // let the settle handler run
+    expect(await protocol._handleOAuth2(auth)).toBe("tok");
     expect(protocol._oauthInflight.size).toBe(0);
-    expect(protocol._oauthGenerations.size).toBe(0);
+    expect(cached(protocol)).toBe("tok");
   });
 
-  test("invalidated twice mid-flight still never caches the stale token, then prunes", async () => {
-    // The obvious approach (bump only if an in-flight map entry exists) breaks
-    // here: after the first invalidation removed the entry, a second one would
-    // see nothing in flight, prune the counter, and let the stale fetch cache.
+  test("a fetch invalidated mid-flight (even twice) never caches its stale result", async () => {
     const protocol: any = new McpCommunicationProtocol();
     let resolveFetch!: (v: any) => void;
     const pending = new Promise<any>((res) => { resolveFetch = res; });
@@ -130,26 +132,47 @@ describe("McpCommunicationProtocol OAuth2 generation lifecycle", () => {
     protocol._invalidateOAuthToken(auth); // a second rejection before the fetch lands
     resolveFetch({ data: { access_token: "stale", expires_in: 3600 } });
 
-    await expect(fetching).resolves.toBe("stale");
-    await tick();
-    expect(protocol._oauthTokens.size).toBe(0);
-    expect(protocol._oauthGenerations.size).toBe(0);
+    await expect(fetching).resolves.toBe("stale"); // the caller still gets a token...
+    expect(protocol._oauthTokens.size).toBe(0);     // ...but nothing is cached
     expect(protocol._oauthInflight.size).toBe(0);
   });
 
-  test("a caller arriving after a mid-flight invalidation dials fresh instead of joining", async () => {
+  test("a superseded fetch settling AFTER its replacement cannot repopulate the cache", async () => {
+    // The generation-counter design broke exactly here: the replacement
+    // settling first pruned the counter while the older fetch was still
+    // running, and that older fetch then cached its stale token.
     const protocol: any = new McpCommunicationProtocol();
-    let fetches = 0;
     const gates: Array<(v: any) => void> = [];
-    protocol._fetchOAuth2Token = () => { fetches += 1; return new Promise((res) => gates.push(res)); };
+    protocol._fetchOAuth2Token = () => new Promise((res) => gates.push(res));
 
-    const first = protocol._handleOAuth2(auth);   // fetch #1 in flight
-    protocol._invalidateOAuthToken(auth);          // its generation is now stale
-    const second = protocol._handleOAuth2(auth);  // must NOT join fetch #1
-    expect(fetches).toBe(2);
+    const first = protocol._handleOAuth2(auth);   // fetch #1 is the current entry
+    protocol._invalidateOAuthToken(auth);          // entry dropped; fetch #1 keeps running
+    const second = protocol._handleOAuth2(auth);  // fetch #2 becomes the current entry
+    expect(gates.length).toBe(2);
 
-    const tok = { accessToken: "tok", expiresAt: Date.now() + 3_600_000 };
-    gates.forEach((g) => g(tok));
-    expect(await Promise.all([first, second])).toEqual(["tok", "tok"]);
+    gates[1](tok("fresh"));                        // the replacement settles FIRST
+    expect(await second).toBe("fresh");
+    expect(cached(protocol)).toBe("fresh");
+
+    gates[0](tok("stale"));                        // the superseded fetch settles LAST
+    expect(await first).toBe("stale");             // its caller still receives a token...
+    await tick();
+    expect(cached(protocol)).toBe("fresh");        // ...but it was not current, so the cache kept "fresh"
+    expect(protocol._oauthInflight.size).toBe(0);
+  });
+
+  test("close() drops in-flight entries so a fetch landing afterwards does not cache", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    let resolveFetch!: (v: any) => void;
+    const pending = new Promise<any>((res) => { resolveFetch = res; });
+    protocol._axiosInstance = { post: () => pending };
+
+    const fetching = protocol._handleOAuth2(auth);
+    await protocol.close();                        // entry dropped mid-fetch
+    resolveFetch({ data: { access_token: "late", expires_in: 3600 } });
+
+    await expect(fetching).resolves.toBe("late");
+    expect(protocol._oauthTokens.size).toBe(0);    // the drain left no credential behind
+    expect(protocol._oauthInflight.size).toBe(0);
   });
 });
