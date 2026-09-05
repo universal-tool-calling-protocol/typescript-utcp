@@ -440,15 +440,16 @@ describe("McpCommunicationProtocol", () => {
       // its local expiry — evicting only the session would resend the same
       // rejected token on every redial until the TTL ran out.
       const protocol = new McpCommunicationProtocol();
-      (protocol as any)._oauthTokens.set("cid", { accessToken: "revoked", expiresAt: Date.now() + 3600_000 });
       const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
+      const tokenKey = (protocol as any)._oauthCacheKey(auth);
+      (protocol as any)._oauthTokens.set(tokenKey, { accessToken: "revoked", expiresAt: Date.now() + 3600_000 });
       const client = seed(protocol, () =>
         Promise.reject(new Error("HTTP 401 Unauthorized")));
 
       await expect(
         (protocol as any)._withSession("s", CONFIG, auth, () => client.op())
       ).rejects.toThrow("401");
-      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+      expect((protocol as any)._oauthTokens.has(tokenKey)).toBe(false);
     });
 
     test("a slower token-fetch variant cannot repopulate the cache after invalidation", async () => {
@@ -466,14 +467,15 @@ describe("McpCommunicationProtocol", () => {
       };
       const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
 
+      const tokenKey = (protocol as any)._oauthCacheKey(auth);
       await expect((protocol as any)._handleOAuth2(auth)).resolves.toBe("fast");
-      expect((protocol as any)._oauthTokens.get("cid")?.accessToken).toBe("fast");
+      expect((protocol as any)._oauthTokens.get(tokenKey)?.accessToken).toBe("fast");
 
       (protocol as any)._invalidateOAuthToken(auth);
       resolveSlow({ data: { access_token: "slow", expires_in: 3600 } });
       await slow;
       await new Promise((r) => setTimeout(r, 0));
-      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+      expect((protocol as any)._oauthTokens.has(tokenKey)).toBe(false);
     });
 
     test("a fetch already in flight when the token is invalidated does not cache its result", async () => {
@@ -489,7 +491,7 @@ describe("McpCommunicationProtocol", () => {
 
       // The in-flight attempt still gets its token — only the CACHE is guarded.
       await expect(fetching).resolves.toBe("stale");
-      expect((protocol as any)._oauthTokens.has("cid")).toBe(false);
+      expect((protocol as any)._oauthTokens.has((protocol as any)._oauthCacheKey(auth))).toBe(false);
     });
 
     test("a session whose connect resolves after close() began is closed, not cached", async () => {
@@ -578,8 +580,9 @@ describe("McpCommunicationProtocol", () => {
       // valid OAuth token. An McpError is a well-formed response from a live
       // session; only its -32001 timeout code says anything about health.
       const protocol = new McpCommunicationProtocol();
-      (protocol as any)._oauthTokens.set("cid", { accessToken: "valid", expiresAt: Date.now() + 3600_000 });
       const auth = { auth_type: "oauth2", client_id: "cid", client_secret: "s", token_url: "https://x/token" };
+      const tokenKey = (protocol as any)._oauthCacheKey(auth);
+      (protocol as any)._oauthTokens.set(tokenKey, { accessToken: "valid", expiresAt: Date.now() + 3600_000 });
       const client = seed(protocol, () =>
         Promise.reject(new McpError(-32602, "Authorization header missing for downstream API")));
 
@@ -589,7 +592,7 @@ describe("McpCommunicationProtocol", () => {
       expect(client.closed).toBe(0);
       // Called with auth, so the session is cached under the auth-inclusive key.
       expect((protocol as any)._mcpSessions.get((protocol as any)._sessionKey("s", CONFIG, auth))).toBe(client);
-      expect((protocol as any)._oauthTokens.has("cid")).toBe(true);
+      expect((protocol as any)._oauthTokens.has(tokenKey)).toBe(true);
     });
 
     test("a structured HTTP 401 classifies as auth without relying on message text", async () => {

@@ -240,18 +240,36 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
    */
   private _invalidateOAuthToken(auth: Auth | undefined): void {
     if (!auth || auth.auth_type === 'oauth2_user') return;
-    const clientId = (auth as OAuth2Auth).client_id;
+    const oauth = auth as OAuth2Auth;
+    const clientId = oauth.client_id;
     if (!clientId) return;
+    const cacheKey = this._oauthCacheKey(oauth);
     // Bump the generation whether or not a token was cached: a fetch may be
     // in flight right now, and it must not cache what it brings back.
-    this._oauthGenerations.set(clientId, this._oauthGeneration(clientId) + 1);
-    if (this._oauthTokens.delete(clientId)) {
+    this._oauthGenerations.set(cacheKey, this._oauthGeneration(cacheKey) + 1);
+    // Drop any pending shared fetch too, so a caller arriving after the
+    // rejection starts a fresh fetch instead of joining the pre-invalidation
+    // one and receiving its now-rejected token.
+    this._oauthInflight.delete(cacheKey);
+    if (this._oauthTokens.delete(cacheKey)) {
       this._logInfo(`Dropped cached OAuth token for client '${clientId}' after an auth rejection.`);
     }
   }
 
-  private _oauthGeneration(clientId: string): number {
-    return this._oauthGenerations.get(clientId) ?? 0;
+  /**
+   * Key for every per-credential OAuth structure (token cache, in-flight
+   * fetch, invalidation generation). Keyed by the FULL configuration, not
+   * `client_id` alone: two templates may share a client_id but point at
+   * different issuers, scopes or secrets, and must not receive each other's
+   * tokens. Matches the HTTP plugin's cache key. Carries the secret, so it is
+   * used only as a map key and never logged.
+   */
+  private _oauthCacheKey(auth: OAuth2Auth): string {
+    return JSON.stringify([auth.token_url, auth.client_id, auth.client_secret, auth.scope || '']);
+  }
+
+  private _oauthGeneration(cacheKey: string): number {
+    return this._oauthGenerations.get(cacheKey) ?? 0;
   }
 
   /**
@@ -742,6 +760,12 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       // and JS promises can't be cancelled, so this only avoids a brief dangling
       // entry after a drain.
       this._oauthInflight.clear();
+      // Likewise drop pending session creations. A dial that began before this
+      // drain will reject with the shutdown error on its own; without this, a
+      // call arriving after the drain could join that doomed promise instead of
+      // dialing fresh. The settle handler's identity guard means the old
+      // promise cannot clobber a newer entry.
+      this._sessionCreations.clear();
     } finally {
       // Drain complete — the shared registry instance stays usable. This
       // instance serves every UtcpClient in the process (see the field
@@ -831,25 +855,25 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     // disable redirects (maxRedirects: 0) — a 307/308 would otherwise let axios
     // replay the client secret to an unvalidated redirect target.
     ensureSecureMcpUrl(authDetails.token_url, 'MCP OAuth2 token URL');
-    const clientId = authDetails.client_id;
-    const cachedToken = this._oauthTokens.get(clientId);
+    const cacheKey = this._oauthCacheKey(authDetails);
+    const cachedToken = this._oauthTokens.get(cacheKey);
     if (cachedToken && cachedToken.expiresAt > Date.now()) {
       return cachedToken.accessToken;
     }
 
     // Coalesce concurrent first-time fetches: share one in-flight request per
-    // client so a burst of callers issues a single token request. The
-    // check-and-set is synchronous, so exactly one fetch is started.
-    let inflight = this._oauthInflight.get(clientId);
+    // credential configuration so a burst of callers issues a single token
+    // request. The check-and-set is synchronous, so exactly one fetch is started.
+    let inflight = this._oauthInflight.get(cacheKey);
     if (!inflight) {
       inflight = this._fetchOAuth2Token(authDetails);
-      this._oauthInflight.set(clientId, inflight);
+      this._oauthInflight.set(cacheKey, inflight);
       // Clear the slot once settled so a later miss re-fetches. The handler
       // never rethrows, so it does not create an unhandled rejection; callers
       // still observe the original promise's rejection via `await inflight`.
       const forget = () => {
-        if (this._oauthInflight.get(clientId) === inflight) {
-          this._oauthInflight.delete(clientId);
+        if (this._oauthInflight.get(cacheKey) === inflight) {
+          this._oauthInflight.delete(cacheKey);
         }
       };
       inflight.then(forget, forget);
@@ -860,8 +884,9 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
   private async _fetchOAuth2Token(authDetails: OAuth2Auth): Promise<{ accessToken: string; expiresAt: number }> {
     const clientId = authDetails.client_id;
+    const cacheKey = this._oauthCacheKey(authDetails);
     this._logInfo(`Fetching new OAuth2 token for client: '${clientId}'`);
-    const generation = this._oauthGeneration(clientId);
+    const generation = this._oauthGeneration(cacheKey);
 
     try {
       // Only the WINNER of the race caches — previously each variant wrote
@@ -892,8 +917,8 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
           return { accessToken: response.data.access_token as string, expiresAt };
         })()
       ]);
-      if (this._oauthGeneration(clientId) === generation) {
-        this._oauthTokens.set(clientId, token);
+      if (this._oauthGeneration(cacheKey) === generation) {
+        this._oauthTokens.set(cacheKey, token);
       } else {
         this._logInfo(`OAuth token for client '${clientId}' was invalidated while a fetch was in flight; not caching the stale result.`);
       }

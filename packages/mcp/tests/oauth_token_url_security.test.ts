@@ -80,7 +80,7 @@ describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
       calls += 1;
       await gate;
       const token = { accessToken: "tok", expiresAt: Date.now() + 3_600_000 };
-      protocol._oauthTokens.set(a.client_id, token);
+      protocol._oauthTokens.set(protocol._oauthCacheKey(a), token);
       return token;
     };
 
