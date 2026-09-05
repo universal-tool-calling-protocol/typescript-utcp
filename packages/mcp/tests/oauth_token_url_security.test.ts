@@ -1,12 +1,11 @@
 // Security: the MCP OAuth2 token endpoint must be validated before the
 // operator's client secret is posted to it, so a manual cannot direct
 // credentials at an arbitrary host. Mirrors the guard the HTTP plugin applies.
-import { test, expect, describe } from "bun:test";
+// The HTTP session is stubbed so the guard is exercised without network I/O.
+import { test, expect, describe, mock } from "bun:test";
 import { McpCommunicationProtocol } from "../src/index";
 
 describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
-  const protocol: any = new McpCommunicationProtocol();
-
   const auth = (tokenUrl: string) => ({
     auth_type: "oauth2",
     token_url: tokenUrl,
@@ -15,16 +14,30 @@ describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
     scope: "",
   });
 
-  test("rejects a non-loopback plain-HTTP token URL before sending credentials", async () => {
+  test("rejects a non-loopback plain-HTTP token URL without ever posting credentials", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const post = mock(async () => ({ data: { access_token: "tok", expires_in: 3600 } }));
+    protocol._axiosInstance = { post };
+
     await expect(protocol._handleOAuth2(auth("http://attacker.example/token"))).rejects.toThrow(
       "Security error",
     );
+    // The guard must run before any request: the credential POST is never made.
+    expect(post).toHaveBeenCalledTimes(0);
   });
 
-  test("a loopback token URL passes the guard (then fails on connection, not the guard)", async () => {
-    // Port 1 refuses immediately; the resulting error must not be the guard's.
-    await expect(protocol._handleOAuth2(auth("http://127.0.0.1:1/token"))).rejects.not.toThrow(
-      "Security error",
-    );
+  test("a secure token URL passes the guard and fetches the token", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const post = mock(async () => ({ data: { access_token: "tok", expires_in: 3600 } }));
+    protocol._axiosInstance = { post };
+
+    const token = await protocol._handleOAuth2(auth("https://auth.example.com/token"));
+    expect(token).toBe("tok");
+    expect(post).toHaveBeenCalled();
+    // Credential POSTs must disable redirects so a 307/308 can't replay the
+    // client secret to an unvalidated target.
+    for (const call of post.mock.calls) {
+      expect(call[2]).toMatchObject({ maxRedirects: 0 });
+    }
   });
 });

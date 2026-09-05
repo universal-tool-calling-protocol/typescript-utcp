@@ -768,6 +768,9 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   private async _handleOAuth2(authDetails: OAuth2Auth): Promise<string> {
     // Validate the token endpoint before sending credentials to it, so a
     // manual cannot direct the operator's client secret at an arbitrary host.
+    // Validation covers only this URL, so the credential-bearing POSTs below
+    // disable redirects (maxRedirects: 0) — a 307/308 would otherwise let axios
+    // replay the client secret to an unvalidated redirect target.
     ensureSecureMcpUrl(authDetails.token_url, 'MCP OAuth2 token URL');
     const clientId = authDetails.client_id;
     const cachedToken = this._oauthTokens.get(clientId);
@@ -790,7 +793,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
             'grant_type': 'client_credentials', 'client_id': authDetails.client_id,
             'client_secret': authDetails.client_secret, 'scope': authDetails.scope || ''
           });
-          const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+          const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, maxRedirects: 0 });
           if (!response.data.access_token) throw new Error("Access token not found in response.");
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
           return { accessToken: response.data.access_token as string, expiresAt };
@@ -799,7 +802,8 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
           const bodyData = new URLSearchParams({ 'grant_type': 'client_credentials', 'scope': authDetails.scope || '' });
           const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), {
             auth: { username: authDetails.client_id, password: authDetails.client_secret },
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            maxRedirects: 0
           });
           if (!response.data.access_token) throw new Error("Access token not found in response.");
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
