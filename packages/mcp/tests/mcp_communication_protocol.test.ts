@@ -301,7 +301,10 @@ describe("McpCommunicationProtocol", () => {
 
   describe("Session eviction on session-class failures (issue #34)", () => {
     const CONFIG = { transport: "stdio" as const, command: "true", timeout: 60 };
-    const KEY = "s:stdio";
+    // The session key now includes a config+auth fingerprint; compute it the
+    // same way the protocol does. This is the key for (CONFIG, no-auth), which
+    // the run()-based tests below exercise.
+    const KEY = (new McpCommunicationProtocol() as any)._sessionKey("s", CONFIG, undefined);
 
     /** A fake cached session whose close() we can observe, wired into the
      * protocol's private session map the way _getOrCreateSession would. */
@@ -312,9 +315,10 @@ describe("McpCommunicationProtocol", () => {
         close() { this.closed += 1; return Promise.resolve(); },
         op: () => behavior((calls += 1)),
       };
-      (protocol as any)._mcpSessions.set(KEY, client);
-      (protocol as any)._getOrCreateSession = () => {
-        (protocol as any)._mcpSessions.set(KEY, client);
+      // Cache under the SAME key the real _getOrCreateSession would for these
+      // args, so _withSession's cleanup (which recomputes the key) targets it.
+      (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+        (protocol as any)._mcpSessions.set((protocol as any)._sessionKey(sn, sc, a), client);
         return Promise.resolve(client);
       };
       return client;
@@ -383,7 +387,8 @@ describe("McpCommunicationProtocol", () => {
         (protocol as any)._withSession("s", config, undefined, () => client.op())
       ).rejects.toThrow("timed out");
       expect(client.closed).toBe(1);
-      expect((protocol as any)._mcpSessions.has(KEY)).toBe(false);
+      // This test uses a modified config (timeout: 1), so its session key differs.
+      expect((protocol as any)._mcpSessions.has((protocol as any)._sessionKey("s", config, undefined))).toBe(false);
     });
 
     test("an auth failure dressed in connection vocabulary is not retried", async () => {
@@ -582,7 +587,8 @@ describe("McpCommunicationProtocol", () => {
         (protocol as any)._withSession("s", CONFIG, auth, () => client.op())
       ).rejects.toThrow("Authorization");
       expect(client.closed).toBe(0);
-      expect((protocol as any)._mcpSessions.get(KEY)).toBe(client);
+      // Called with auth, so the session is cached under the auth-inclusive key.
+      expect((protocol as any)._mcpSessions.get((protocol as any)._sessionKey("s", CONFIG, auth))).toBe(client);
       expect((protocol as any)._oauthTokens.has("cid")).toBe(true);
     });
 
@@ -839,5 +845,35 @@ describe("McpCommunicationProtocol session-creation coalescing", () => {
     await protocol._getOrCreateSession("s", CONFIG);
 
     expect(creations).toBe(2);
+  });
+});
+
+describe("McpCommunicationProtocol session isolation by config + auth", () => {
+  test("same server name but different config yields different session keys", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const a = protocol._sessionKey("srv", { transport: "stdio", command: "serverA" }, undefined);
+    const b = protocol._sessionKey("srv", { transport: "stdio", command: "serverB" }, undefined);
+    expect(a).not.toBe(b);
+  });
+
+  test("same server name + config but different auth yields different session keys", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const cfg = { transport: "http", url: "https://x/mcp" };
+    const a = protocol._sessionKey("srv", cfg, { auth_type: "oauth2", client_id: "a", client_secret: "s", token_url: "https://x/t" });
+    const b = protocol._sessionKey("srv", cfg, { auth_type: "oauth2", client_id: "b", client_secret: "s", token_url: "https://x/t" });
+    expect(a).not.toBe(b);
+  });
+
+  test("identical name + config + auth yields the same key (sessions still shared)", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const cfg = { transport: "stdio", command: "node" };
+    expect(protocol._sessionKey("srv", cfg, undefined)).toBe(protocol._sessionKey("srv", cfg, undefined));
+  });
+
+  test("the session key never embeds the raw secret (log-safe)", () => {
+    const protocol: any = new McpCommunicationProtocol();
+    const cfg = { transport: "http", url: "https://x/mcp" };
+    const key = protocol._sessionKey("srv", cfg, { auth_type: "oauth2", client_id: "a", client_secret: "TOPSECRET", token_url: "https://x/t" });
+    expect(key).not.toContain("TOPSECRET");
   });
 });

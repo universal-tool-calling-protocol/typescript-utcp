@@ -1,4 +1,5 @@
 // packages/mcp/src/mcp_communication_protocol.ts
+import { createHash } from 'crypto';
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -253,12 +254,30 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     return this._oauthGenerations.get(clientId) ?? 0;
   }
 
+  /**
+   * Identity of a cached session. This protocol instance is shared
+   * process-wide, so keying by server name alone would let two manuals that
+   * name a server the same (e.g. "github") share a session even when their
+   * configs or credentials differ — one manual's calls would then run against
+   * the other's server or token. Include the config and auth so distinct
+   * connections get distinct sessions (mirrors python-utcp keying clients by
+   * config + auth). The config and auth are HASHED, not embedded, so the key
+   * stays log-safe and never exposes a secret.
+   */
+  private _sessionKey(serverName: string, serverConfig: McpServerConfig, auth?: Auth): string {
+    const fingerprint = createHash('sha256')
+      .update(JSON.stringify({ config: serverConfig, auth: auth ?? null }))
+      .digest('hex')
+      .slice(0, 16);
+    return `${serverName}:${serverConfig.transport}:${fingerprint}`;
+  }
+
   private async _getOrCreateSession(
     serverName: string,
     serverConfig: McpServerConfig,
     auth?: Auth
   ): Promise<McpClient> {
-    const sessionKey = `${serverName}:${serverConfig.transport}`;
+    const sessionKey = this._sessionKey(serverName, serverConfig, auth);
 
     // Check if we have an existing session
     if (this._mcpSessions.has(sessionKey)) {
@@ -548,7 +567,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     auth: Auth | undefined,
     operation: (client: McpClient) => Promise<T>
   ): Promise<T> {
-    const sessionKey = `${serverName}:${serverConfig.transport}`;
+    const sessionKey = this._sessionKey(serverName, serverConfig, auth);
     const timeoutMs = this._getTimeoutMs(serverConfig);
     // Hoisted so the catch arms can hand the SPECIFIC client that failed to
     // `_cleanupSession` — a key-only eviction would close whatever a
