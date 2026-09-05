@@ -124,6 +124,12 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   private _axiosInstance: AxiosInstance;
   private _mcpSessions: Map<string, McpClient> = new Map();
   /**
+   * In-flight session creations, keyed by sessionKey. Concurrent first calls
+   * for the same server share one dial instead of each spawning a transport and
+   * orphaning all but the last (which `_mcpSessions.set` would silently drop).
+   */
+  private _sessionCreations: Map<string, Promise<McpClient>> = new Map();
+  /**
    * `close()` is a DRAIN, not a terminal state. This instance is registered
    * once at module load (`index.ts`) into the process-wide
    * `CommunicationProtocol.communicationProtocols` registry, and EVERY
@@ -261,6 +267,29 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       return existingSession;
     }
 
+    // Coalesce concurrent creations for the same key: without this, a burst of
+    // first calls each dials a transport and all but the last are orphaned
+    // (never closed). Cleared on settle so a later miss — including a retry
+    // after eviction — dials fresh.
+    const inflight = this._sessionCreations.get(sessionKey);
+    if (inflight) return inflight;
+    const creation = this._createSession(serverName, serverConfig, auth, sessionKey);
+    this._sessionCreations.set(sessionKey, creation);
+    const forget = () => {
+      if (this._sessionCreations.get(sessionKey) === creation) {
+        this._sessionCreations.delete(sessionKey);
+      }
+    };
+    creation.then(forget, forget);
+    return creation;
+  }
+
+  private async _createSession(
+    serverName: string,
+    serverConfig: McpServerConfig,
+    auth: Auth | undefined,
+    sessionKey: string,
+  ): Promise<McpClient> {
     // Worded without the transient markers ("closed", "disconnected") on
     // purpose, so `_withSession` does not classify shutdown as a transport
     // hiccup and spend a retry on it.

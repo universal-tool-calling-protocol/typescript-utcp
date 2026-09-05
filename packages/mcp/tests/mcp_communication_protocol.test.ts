@@ -798,3 +798,46 @@ describe("McpCommunicationProtocol", () => {
     });
   });
 });
+describe("McpCommunicationProtocol session-creation coalescing", () => {
+  const CONFIG = { transport: "stdio" as const, command: "true", timeout: 60 };
+
+  test("concurrent first calls for the same server dial exactly once", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    let creations = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const fakeClient = { close: () => Promise.resolve() };
+    protocol._createSession = async () => {
+      creations += 1;
+      await gate;
+      protocol._mcpSessions.set("s:stdio", fakeClient);
+      return fakeClient;
+    };
+
+    const pending = Promise.all([
+      protocol._getOrCreateSession("s", CONFIG),
+      protocol._getOrCreateSession("s", CONFIG),
+      protocol._getOrCreateSession("s", CONFIG),
+    ]);
+    release();
+    const clients = await pending;
+
+    expect(creations).toBe(1);
+    expect(clients.every((c: any) => c === fakeClient)).toBe(true);
+    expect(protocol._sessionCreations.size).toBe(0); // slot cleared on settle
+  });
+
+  test("a later call after the creation settles dials again", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    let creations = 0;
+    protocol._createSession = async () => {
+      creations += 1;
+      return { close: () => Promise.resolve() }; // not cached, so the next call misses
+    };
+
+    await protocol._getOrCreateSession("s", CONFIG);
+    await protocol._getOrCreateSession("s", CONFIG);
+
+    expect(creations).toBe(2);
+  });
+});
