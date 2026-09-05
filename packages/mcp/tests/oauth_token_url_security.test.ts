@@ -70,4 +70,29 @@ describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
       expect(post).toHaveBeenCalled();
     });
   }
+
+  test("concurrent first-time token fetches are coalesced into one request", async () => {
+    const protocol: any = new McpCommunicationProtocol();
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    protocol._fetchOAuth2Token = async (a: any) => {
+      calls += 1;
+      await gate;
+      const token = { accessToken: "tok", expiresAt: Date.now() + 3_600_000 };
+      protocol._oauthTokens.set(a.client_id, token);
+      return token;
+    };
+
+    // All five callers are started synchronously and attach to the shared fetch
+    // before it is released.
+    const pending = Promise.all(
+      [0, 1, 2, 3, 4].map(() => protocol._handleOAuth2(auth("https://auth.example.com/token")))
+    );
+    release();
+    const results = await pending;
+
+    expect(results).toEqual(["tok", "tok", "tok", "tok", "tok"]);
+    expect(calls).toBe(1);
+  });
 });

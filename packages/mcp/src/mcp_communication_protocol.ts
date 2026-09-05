@@ -107,6 +107,13 @@ function isMcpToolsResponse(data: unknown): data is { tools: McpToolResponse[] }
 export class McpCommunicationProtocol implements CommunicationProtocol {
   private _oauthTokens: Map<string, { accessToken: string; expiresAt: number }> = new Map();
   /**
+   * In-flight token fetches, keyed like the token cache (by client_id). A burst
+   * of concurrent first-time callers shares one request instead of each POSTing
+   * to the token endpoint. (Promises are not cancellable in JS, so unlike the
+   * Python plugin no shielding is needed — extra awaiters cannot abort the fetch.)
+   */
+  private _oauthInflight: Map<string, Promise<{ accessToken: string; expiresAt: number }>> = new Map();
+  /**
    * Per-client invalidation counter. A token fetch captures the generation
    * when it starts and only caches its result if nothing invalidated the
    * client in the meantime — otherwise an in-flight fetch that began before
@@ -683,6 +690,10 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       const cleanupPromises = Array.from(this._mcpSessions.keys()).map(key => this._cleanupSession(key));
       await Promise.all(cleanupPromises);
       this._oauthTokens.clear();
+      // Drop references to any in-flight fetches; they self-remove on settle,
+      // and JS promises can't be cancelled, so this only avoids a brief dangling
+      // entry after a drain.
+      this._oauthInflight.clear();
     } finally {
       // Drain complete — the shared registry instance stays usable. This
       // instance serves every UtcpClient in the process (see the field
@@ -778,6 +789,29 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       return cachedToken.accessToken;
     }
 
+    // Coalesce concurrent first-time fetches: share one in-flight request per
+    // client so a burst of callers issues a single token request. The
+    // check-and-set is synchronous, so exactly one fetch is started.
+    let inflight = this._oauthInflight.get(clientId);
+    if (!inflight) {
+      inflight = this._fetchOAuth2Token(authDetails);
+      this._oauthInflight.set(clientId, inflight);
+      // Clear the slot once settled so a later miss re-fetches. The handler
+      // never rethrows, so it does not create an unhandled rejection; callers
+      // still observe the original promise's rejection via `await inflight`.
+      const forget = () => {
+        if (this._oauthInflight.get(clientId) === inflight) {
+          this._oauthInflight.delete(clientId);
+        }
+      };
+      inflight.then(forget, forget);
+    }
+    const token = await inflight;
+    return token.accessToken;
+  }
+
+  private async _fetchOAuth2Token(authDetails: OAuth2Auth): Promise<{ accessToken: string; expiresAt: number }> {
+    const clientId = authDetails.client_id;
     this._logInfo(`Fetching new OAuth2 token for client: '${clientId}'`);
     const generation = this._oauthGeneration(clientId);
 
@@ -815,7 +849,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       } else {
         this._logInfo(`OAuth token for client '${clientId}' was invalidated while a fetch was in flight; not caching the stale result.`);
       }
-      return token.accessToken;
+      return token;
     } catch (aggregateError: any) {
       const errorMessages = aggregateError.errors?.map((e: Error) => e.message).join('; ') || String(aggregateError);
       throw new Error(`Failed to fetch OAuth2 token for client '${clientId}': ${errorMessages}`);
