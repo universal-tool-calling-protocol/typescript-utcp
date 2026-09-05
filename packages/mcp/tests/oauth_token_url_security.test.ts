@@ -95,6 +95,18 @@ describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
     expect(results).toEqual(["tok", "tok", "tok", "tok", "tok"]);
     expect(calls).toBe(1);
   });
+
+  test("an access_token that is not a non-empty string is a failed fetch and is never cached", async () => {
+    // A truthy non-string would be formatted into `Bearer 12345` and injected as
+    // an invalid credential on every reuse. A bare `!x` check lets it through,
+    // so this test fails if the string requirement is removed.
+    const protocol: any = new McpCommunicationProtocol();
+    protocol._axiosInstance = { post: async () => ({ data: { access_token: 12345, expires_in: 3600 } }) };
+
+    await expect(protocol._handleOAuth2(auth("https://auth.example.com/token"))).rejects.toThrow("usable");
+    expect(protocol._oauthTokens.size).toBe(0);
+    expect(protocol._oauthInflight.size).toBe(0); // the failed fetch released its slot
+  });
 });
 
 describe("McpCommunicationProtocol OAuth2 in-flight identity lifecycle", () => {

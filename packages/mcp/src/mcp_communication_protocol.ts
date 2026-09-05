@@ -252,6 +252,22 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   }
 
   /**
+   * The one rule for what may enter the token cache: a successful HTTP
+   * response is not a successful token fetch unless it carries a USABLE
+   * access token, i.e. a non-empty string. The transport formats whatever it
+   * is given into `Bearer <token>`, so a truthy non-string (a number, `true`,
+   * an object) would be injected as an invalid credential on every reuse.
+   * Both fetch variants go through this, so the rule lives in one place.
+   */
+  private _requireAccessToken(data: any): string {
+    const token = data?.access_token;
+    if (typeof token !== 'string' || token.length === 0) {
+      throw new Error("Access token not found in response, or not a usable string.");
+    }
+    return token;
+  }
+
+  /**
    * Key for every per-credential OAuth structure (token cache, in-flight
    * fetch). Keyed by the FULL configuration, not `client_id` alone: two
    * templates may share a client_id but point at different issuers, scopes or
@@ -902,9 +918,9 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
             'client_secret': authDetails.client_secret, 'scope': authDetails.scope || ''
           });
           const response = await this._axiosInstance.post(authDetails.token_url, bodyData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, maxRedirects: 0 });
-          if (!response.data.access_token) throw new Error("Access token not found in response.");
+          const accessToken = this._requireAccessToken(response.data);
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
-          return { accessToken: response.data.access_token as string, expiresAt };
+          return { accessToken, expiresAt };
         })(),
         (async () => {
           const bodyData = new URLSearchParams({ 'grant_type': 'client_credentials', 'scope': authDetails.scope || '' });
@@ -913,9 +929,9 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             maxRedirects: 0
           });
-          if (!response.data.access_token) throw new Error("Access token not found in response.");
+          const accessToken = this._requireAccessToken(response.data);
           const expiresAt = Date.now() + ((response.data.expires_in || 3600) * 1000);
-          return { accessToken: response.data.access_token as string, expiresAt };
+          return { accessToken, expiresAt };
         })()
       ]);
       return token;
