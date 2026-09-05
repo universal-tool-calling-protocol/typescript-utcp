@@ -40,4 +40,16 @@ describe("McpCommunicationProtocol OAuth2 token URL guard", () => {
       expect(call[2]).toMatchObject({ maxRedirects: 0 });
     }
   });
+
+  test("a loopback plain-HTTP token URL passes the guard (local dev)", async () => {
+    // Covers the loopback accept branch of ensureSecureMcpUrl (localhost /
+    // 127.0.0.0/8 / 0.0.0.0 / ::ffff:127.x), which HTTPS alone doesn't exercise.
+    const protocol: any = new McpCommunicationProtocol();
+    const post = mock(async () => ({ data: { access_token: "tok", expires_in: 3600 } }));
+    protocol._axiosInstance = { post };
+
+    const token = await protocol._handleOAuth2(auth("http://127.0.0.1/token"));
+    expect(token).toBe("tok");
+    expect(post).toHaveBeenCalled();
+  });
 });
