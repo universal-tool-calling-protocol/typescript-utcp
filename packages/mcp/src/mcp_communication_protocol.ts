@@ -710,6 +710,10 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       }
     }
 
+    // Build the result BEFORE taking any reference: `parse` can throw, and a
+    // reference taken for a registration that then rejects would be held by a
+    // manual the client never saved and will never deregister.
+    const manual = UtcpManualSchema.parse({ tools: allTools });
     const success = allErrors.length === 0;
     if (success) {
       // Take a session reference for each server, so a later deregister of
@@ -724,7 +728,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
 
     return {
       manualCallTemplate: mcpCallTemplate,
-      manual: UtcpManualSchema.parse({ tools: allTools }),
+      manual,
       success,
       errors: allErrors,
     };
@@ -822,10 +826,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       // promise instead of dialing fresh. The settle handler's identity guard
       // means the old promise cannot clobber a newer entry.
       this._sessionCreations.clear();
-      // The whole instance drained: no session is held any more. (The refs
-      // are per-instance ownership bookkeeping, not credentials, so they
-      // clear with the sessions they counted.)
-      this._sessionRefs.clear();
+      // `_sessionRefs` is deliberately NOT cleared. It counts REGISTRATIONS,
+      // not live connections: a drain closes this instance's sessions, but
+      // every manual registered against them stays registered in its own
+      // client and redials on its next call. Clearing here would disown those
+      // manuals, and the first of them to deregister would then close a
+      // redialed session its siblings are still using. Only `deregisterManual`
+      // — the true inverse of `registerManual` — moves these counts.
     } finally {
       // Drain complete — the shared registry instance stays usable. This
       // instance serves every UtcpClient in the process (see the field
