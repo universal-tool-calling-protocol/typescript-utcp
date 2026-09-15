@@ -880,3 +880,250 @@ describe("McpCommunicationProtocol session isolation by config + auth", () => {
     expect(key).not.toContain("TOPSECRET");
   });
 });
+
+describe("deregisterManual closes the sessions registerManual opened", () => {
+  const CONFIG = { transport: "stdio" as const, command: "true" };
+
+  /**
+   * Stand in for `_getOrCreateSession`: caches by the SAME key the real one
+   * uses (so `_cleanupSession`, which recomputes the key, reaches the session),
+   * and answers discovery so `registerManual` succeeds and takes its reference.
+   * Returns the list of clients it has dialed, newest last — a redial after a
+   * drain is a NEW entry, which is what makes "closed someone else's redialed
+   * session" observable.
+   */
+  function seedDiscoverable(protocol: McpCommunicationProtocol) {
+    const dials: Array<{ closed: number }> = [];
+    (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+      const key = (protocol as any)._sessionKey(sn, sc, a);
+      const cached = (protocol as any)._mcpSessions.get(key);
+      if (cached) return Promise.resolve(cached);
+      const client = {
+        closed: 0,
+        close() { this.closed += 1; return Promise.resolve(); },
+        listTools: () => Promise.resolve({ tools: [{ name: "t", description: "", inputSchema: {}, outputSchema: {} }] }),
+      };
+      dials.push(client);
+      (protocol as any)._mcpSessions.set(key, client);
+      return Promise.resolve(client);
+    };
+    return dials;
+  }
+
+  const template = (name: string): McpCallTemplate => ({
+    name,
+    call_template_type: "mcp",
+    config: { mcpServers: { s: CONFIG } },
+  });
+
+  test("closes the session under the real config+auth key (not the dead :stdio/:http key)", async () => {
+    const protocol = new McpCommunicationProtocol();
+    const dials = seedDiscoverable(protocol);
+    const key = (protocol as any)._sessionKey("s", CONFIG, undefined);
+
+    await protocol.registerManual({} as any, template("m"));
+    expect((protocol as any)._mcpSessions.has(key)).toBe(true);
+
+    await protocol.deregisterManual({} as any, template("m"));
+    // The regression: the old code cleaned `s:stdio`/`s:http` and left this.
+    expect(dials[0].closed).toBe(1);
+    expect((protocol as any)._mcpSessions.has(key)).toBe(false);
+  });
+
+  test("a session shared by two manuals survives the first deregister, closes on the last", async () => {
+    const protocol = new McpCommunicationProtocol();
+    const dials = seedDiscoverable(protocol);
+    const key = (protocol as any)._sessionKey("s", CONFIG, undefined);
+
+    // Two manuals, identical server config+auth → one shared session, ref 2.
+    await protocol.registerManual({} as any, template("m1"));
+    await protocol.registerManual({} as any, template("m2"));
+
+    await protocol.deregisterManual({} as any, template("m1"));
+    expect(dials[0].closed).toBe(0); // m2 still holds it
+    expect((protocol as any)._mcpSessions.has(key)).toBe(true);
+
+    await protocol.deregisterManual({} as any, template("m2"));
+    expect(dials[0].closed).toBe(1); // last owner gone
+    expect((protocol as any)._mcpSessions.has(key)).toBe(false);
+  });
+
+  test("a drain does not disown a still-registered manual", async () => {
+    // `close()` is a drain of this shared instance, not a deregistration: a
+    // client closing does not unregister anyone else's manuals. If the drain
+    // cleared ownership, the next manual to deregister would look like the
+    // last owner and close the REDIALED session its siblings are still using.
+    const protocol = new McpCommunicationProtocol();
+    const dials = seedDiscoverable(protocol);
+    const key = (protocol as any)._sessionKey("s", CONFIG, undefined);
+
+    await protocol.registerManual({} as any, template("m1"));
+    await protocol.registerManual({} as any, template("m2"));
+
+    await protocol.close();
+    expect(dials[0].closed).toBe(1); // the drain closed the live session
+    expect((protocol as any)._mcpSessions.has(key)).toBe(false);
+
+    // m1 and m2 are still registered in their own clients; the next call
+    // redials. This is the session the two of them now share.
+    await (protocol as any)._getOrCreateSession("s", CONFIG, undefined);
+    expect(dials).toHaveLength(2);
+
+    await protocol.deregisterManual({} as any, template("m1"));
+    expect(dials[1].closed).toBe(0); // m2 still owns it — untouched by the drain
+    expect((protocol as any)._mcpSessions.has(key)).toBe(true);
+
+    await protocol.deregisterManual({} as any, template("m2"));
+    expect(dials[1].closed).toBe(1);
+  });
+
+  test("a failed registration takes no reference (nothing to deregister later)", async () => {
+    const protocol = new McpCommunicationProtocol();
+    // Discovery fails: no session, registration reports failure.
+    (protocol as any)._getOrCreateSession = () => Promise.reject(new Error("boom"));
+    const result = await protocol.registerManual({} as any, template("m"));
+    expect(result.success).toBe(false);
+    const key = (protocol as any)._sessionKey("s", CONFIG, undefined);
+    expect((protocol as any)._sessionRefs.has(key)).toBe(false);
+  });
+
+  test("a registration whose result fails validation takes no reference", async () => {
+    // Discovery succeeds but the assembled manual does not validate, so
+    // registerManual REJECTS — the client neither saves nor later deregisters
+    // it, so it must leave no reference behind either.
+    const protocol = new McpCommunicationProtocol();
+    (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+      (protocol as any)._mcpSessions.set((protocol as any)._sessionKey(sn, sc, a), {
+        close: () => Promise.resolve(),
+        // `description` is not a string: the tool schema rejects it when the
+        // manual is parsed, after every per-server discovery has succeeded.
+        listTools: () => Promise.resolve({ tools: [{ name: "t", description: 123, inputSchema: {}, outputSchema: {} }] }),
+      });
+      return Promise.resolve((protocol as any)._mcpSessions.get((protocol as any)._sessionKey(sn, sc, a)));
+    };
+
+    await expect(protocol.registerManual({} as any, template("m"))).rejects.toThrow();
+    const key = (protocol as any)._sessionKey("s", CONFIG, undefined);
+    expect((protocol as any)._sessionRefs.has(key)).toBe(false);
+  });
+});
+
+describe("a failed registration does not strand the sessions it opened", () => {
+  const CONFIG = { transport: "stdio" as const, command: "true" };
+
+  /** Dials succeed for every server except those named in `failing`. */
+  function seedPartial(protocol: McpCommunicationProtocol, failing: string[]) {
+    const clients = new Map<string, { closed: number }>();
+    (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+      if (failing.includes(sn)) return Promise.reject(new Error(`no route to '${sn}'`));
+      const key = (protocol as any)._sessionKey(sn, sc, a);
+      const cached = (protocol as any)._mcpSessions.get(key);
+      if (cached) return Promise.resolve(cached);
+      const client = {
+        closed: 0,
+        close() { this.closed += 1; return Promise.resolve(); },
+        listTools: () => Promise.resolve({ tools: [{ name: "t", description: "", inputSchema: {}, outputSchema: {} }] }),
+      };
+      clients.set(sn, client);
+      (protocol as any)._mcpSessions.set(key, client);
+      return Promise.resolve(client);
+    };
+    return clients;
+  }
+
+  const twoServers = (name: string): McpCallTemplate => ({
+    name,
+    call_template_type: "mcp",
+    config: { mcpServers: { a: CONFIG, b: CONFIG } },
+  });
+
+  test("closes the session a partly-failed registration opened (no owner would ever close it)", async () => {
+    const protocol = new McpCommunicationProtocol();
+    const clients = seedPartial(protocol, ["b"]);
+    const keyA = (protocol as any)._sessionKey("a", CONFIG, undefined);
+
+    // 'a' discovers, 'b' refuses → the manual is not registered, so the client
+    // will never deregister it and nothing else holds 'a'.
+    const result = await protocol.registerManual({} as any, twoServers("m"));
+    expect(result.success).toBe(false);
+
+    expect(clients.get("a")!.closed).toBe(1);
+    expect((protocol as any)._mcpSessions.has(keyA)).toBe(false);
+    expect((protocol as any)._sessionRefs.size).toBe(0);
+  });
+
+  test("leaves a session another registered manual owns", async () => {
+    const protocol = new McpCommunicationProtocol();
+    const clients = seedPartial(protocol, ["b"]);
+    const keyA = (protocol as any)._sessionKey("a", CONFIG, undefined);
+
+    // An established owner of server 'a' (same config+auth → same session).
+    const owner: McpCallTemplate = { name: "owner", call_template_type: "mcp", config: { mcpServers: { a: CONFIG } } };
+    await protocol.registerManual({} as any, owner);
+    expect((protocol as any)._sessionRefs.get(keyA)).toBe(1);
+
+    // A second manual fails on 'b' after reusing 'a' — the owner's session
+    // must survive the cleanup.
+    const result = await protocol.registerManual({} as any, twoServers("m"));
+    expect(result.success).toBe(false);
+
+    expect(clients.get("a")!.closed).toBe(0);
+    expect((protocol as any)._mcpSessions.has(keyA)).toBe(true);
+    expect((protocol as any)._sessionRefs.get(keyA)).toBe(1);
+  });
+});
+
+describe("concurrent registrations do not close each other's sessions", () => {
+  const CONFIG = { transport: "stdio" as const, command: "true" };
+
+  test("a failing registration leaves the session an in-flight registration is using", async () => {
+    // The race: `_getOrCreateSession` hands the second attempt the session the
+    // first one opened, and the first has not finished (so under a
+    // "no registered owner" test it looks unowned). A reference held for the
+    // duration of the attempt is what makes it an owner.
+    const protocol = new McpCommunicationProtocol();
+    let openTheGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openTheGate = resolve; });
+    let firstDiscovery = true;
+    const clients = new Map<string, { closed: number }>();
+
+    (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+      if (sn === "b") return Promise.reject(new Error("no route to 'b'"));
+      const key = (protocol as any)._sessionKey(sn, sc, a);
+      const cached = (protocol as any)._mcpSessions.get(key);
+      if (cached) return Promise.resolve(cached);
+      const client = {
+        closed: 0,
+        close() { this.closed += 1; return Promise.resolve(); },
+        // Only the FIRST discovery waits — that is the in-flight attempt.
+        listTools: async () => {
+          if (firstDiscovery) { firstDiscovery = false; await gate; }
+          return { tools: [{ name: "t", description: "", inputSchema: {}, outputSchema: {} }] };
+        },
+      };
+      clients.set(sn, client);
+      (protocol as any)._mcpSessions.set(key, client);
+      return Promise.resolve(client);
+    };
+
+    // m1 opens 'a' and parks inside discovery.
+    const m1 = protocol.registerManual({} as any, {
+      name: "m1", call_template_type: "mcp", config: { mcpServers: { a: CONFIG } },
+    } as McpCallTemplate);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // m2 reuses 'a', then fails on 'b' — its cleanup must not touch 'a'.
+    const r2 = await protocol.registerManual({} as any, {
+      name: "m2", call_template_type: "mcp", config: { mcpServers: { a: CONFIG, b: CONFIG } },
+    } as McpCallTemplate);
+    expect(r2.success).toBe(false);
+    expect(clients.get("a")!.closed).toBe(0);
+
+    // m1 finishes against a session that is still alive.
+    openTheGate();
+    const r1 = await m1;
+    expect(r1.success).toBe(true);
+    expect(clients.get("a")!.closed).toBe(0);
+    expect((protocol as any)._mcpSessions.has((protocol as any)._sessionKey("a", CONFIG, undefined))).toBe(true);
+  });
+});
