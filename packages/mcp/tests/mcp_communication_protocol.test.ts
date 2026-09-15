@@ -880,3 +880,74 @@ describe("McpCommunicationProtocol session isolation by config + auth", () => {
     expect(key).not.toContain("TOPSECRET");
   });
 });
+
+describe("deregisterManual closes the sessions registerManual opened", () => {
+  const CONFIG = { transport: "stdio" as const, command: "true" };
+
+  /**
+   * A session client whose close() we can count, wired into the protocol under
+   * the SAME key `_getOrCreateSession` would use — so `_cleanupSession` (which
+   * recomputes the key) reaches it, and discovery (`listTools`) succeeds so
+   * `registerManual` reports success and takes its reference.
+   */
+  function seedDiscoverable(protocol: McpCommunicationProtocol) {
+    const client = {
+      closed: 0,
+      close() { this.closed += 1; return Promise.resolve(); },
+      listTools: () => Promise.resolve({ tools: [{ name: "t", description: "", inputSchema: {}, outputSchema: {} }] }),
+    };
+    (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+      (protocol as any)._mcpSessions.set((protocol as any)._sessionKey(sn, sc, a), client);
+      return Promise.resolve(client);
+    };
+    return client;
+  }
+
+  const template = (name: string): McpCallTemplate => ({
+    name,
+    call_template_type: "mcp",
+    config: { mcpServers: { s: CONFIG } },
+  });
+
+  test("closes the session under the real config+auth key (not the dead :stdio/:http key)", async () => {
+    const protocol = new McpCommunicationProtocol();
+    const client = seedDiscoverable(protocol);
+    const key = (protocol as any)._sessionKey("s", CONFIG, undefined);
+
+    await protocol.registerManual({} as any, template("m"));
+    expect((protocol as any)._mcpSessions.has(key)).toBe(true);
+
+    await protocol.deregisterManual({} as any, template("m"));
+    // The regression: the old code cleaned `s:stdio`/`s:http` and left this.
+    expect(client.closed).toBe(1);
+    expect((protocol as any)._mcpSessions.has(key)).toBe(false);
+  });
+
+  test("a session shared by two manuals survives the first deregister, closes on the last", async () => {
+    const protocol = new McpCommunicationProtocol();
+    const client = seedDiscoverable(protocol);
+    const key = (protocol as any)._sessionKey("s", CONFIG, undefined);
+
+    // Two manuals, identical server config+auth → one shared session, ref 2.
+    await protocol.registerManual({} as any, template("m1"));
+    await protocol.registerManual({} as any, template("m2"));
+
+    await protocol.deregisterManual({} as any, template("m1"));
+    expect(client.closed).toBe(0); // m2 still holds it
+    expect((protocol as any)._mcpSessions.has(key)).toBe(true);
+
+    await protocol.deregisterManual({} as any, template("m2"));
+    expect(client.closed).toBe(1); // last owner gone
+    expect((protocol as any)._mcpSessions.has(key)).toBe(false);
+  });
+
+  test("a failed registration takes no reference (nothing to deregister later)", async () => {
+    const protocol = new McpCommunicationProtocol();
+    // Discovery fails: no session, registration reports failure.
+    (protocol as any)._getOrCreateSession = () => Promise.reject(new Error("boom"));
+    const result = await protocol.registerManual({} as any, template("m"));
+    expect(result.success).toBe(false);
+    const key = (protocol as any)._sessionKey("s", CONFIG, undefined);
+    expect((protocol as any)._sessionRefs.has(key)).toBe(false);
+  });
+});

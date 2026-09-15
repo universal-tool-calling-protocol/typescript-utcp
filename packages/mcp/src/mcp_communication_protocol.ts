@@ -129,6 +129,17 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
    */
   private _sessionCreations: Map<string, Promise<McpClient>> = new Map();
   /**
+   * How many registered manuals hold each session, keyed by sessionKey. Two
+   * manuals with identical config+auth share one session (that is the point of
+   * keying by config+auth), so a session must outlive the FIRST owner to
+   * deregister and close only when the LAST one does. `registerManual`
+   * increments; `deregisterManual` decrements and closes at zero. Independent
+   * of whether the session is currently live — a session-class failure may
+   * have evicted it (issue #34) while its owners still hold it; they simply
+   * redial on the next call.
+   */
+  private _sessionRefs: Map<string, number> = new Map();
+  /**
    * `close()` is a DRAIN, not a terminal state. This instance is registered
    * once at module load (`index.ts`) into the process-wide
    * `CommunicationProtocol.communicationProtocols` registry, and EVERY
@@ -699,10 +710,22 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       }
     }
 
+    const success = allErrors.length === 0;
+    if (success) {
+      // Take a session reference for each server, so a later deregister of
+      // THIS manual closes only what it opened. Only on success: the UTCP
+      // client saves — and therefore later deregisters — a manual only when
+      // registration succeeded, so a failed registration must leave no
+      // reference for a deregister that will never come.
+      for (const [serverName, serverConfig] of Object.entries(mcpCallTemplate.config.mcpServers)) {
+        this._retainSession(this._sessionKey(serverName, serverConfig, mcpCallTemplate.auth));
+      }
+    }
+
     return {
       manualCallTemplate: mcpCallTemplate,
       manual: UtcpManualSchema.parse({ tools: allTools }),
-      success: allErrors.length === 0,
+      success,
       errors: allErrors,
     };
   }
@@ -711,11 +734,31 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     const mcpCallTemplate = McpCallTemplateSchema.parse(manualCallTemplate);
     this._logInfo(`Deregistering MCP manual '${mcpCallTemplate.name}'.`);
     if (mcpCallTemplate.config?.mcpServers) {
-      for (const serverName of Object.keys(mcpCallTemplate.config.mcpServers)) {
-        await this._cleanupSession(`${serverName}:stdio`);
-        await this._cleanupSession(`${serverName}:http`);
+      // Release each server under the SAME key registration opened it with
+      // (`_sessionKey`: name + transport + config/auth fingerprint). The old
+      // code closed `${serverName}:stdio` / `:http` — key shapes that stopped
+      // existing when session keying moved to config+auth, so it closed
+      // nothing and every deregistered manual's session leaked.
+      for (const [serverName, serverConfig] of Object.entries(mcpCallTemplate.config.mcpServers)) {
+        await this._releaseSession(this._sessionKey(serverName, serverConfig, mcpCallTemplate.auth));
       }
     }
+  }
+
+  /** One more registered manual holds this session. */
+  private _retainSession(sessionKey: string): void {
+    this._sessionRefs.set(sessionKey, (this._sessionRefs.get(sessionKey) ?? 0) + 1);
+  }
+
+  /** One fewer holds it; close it (if still live) when the last one lets go. */
+  private async _releaseSession(sessionKey: string): Promise<void> {
+    const remaining = (this._sessionRefs.get(sessionKey) ?? 0) - 1;
+    if (remaining > 0) {
+      this._sessionRefs.set(sessionKey, remaining);
+      return;
+    }
+    this._sessionRefs.delete(sessionKey);
+    await this._cleanupSession(sessionKey);
   }
 
   public async callTool(caller: IUtcpClient, toolName: string, toolArgs: Record<string, any>, toolCallTemplate: CallTemplate): Promise<any> {
@@ -779,6 +822,10 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       // promise instead of dialing fresh. The settle handler's identity guard
       // means the old promise cannot clobber a newer entry.
       this._sessionCreations.clear();
+      // The whole instance drained: no session is held any more. (The refs
+      // are per-instance ownership bookkeeping, not credentials, so they
+      // clear with the sessions they counted.)
+      this._sessionRefs.clear();
     } finally {
       // Drain complete — the shared registry instance stays usable. This
       // instance serves every UtcpClient in the process (see the field
