@@ -46,7 +46,7 @@
   "dependencies": {
     "@apidevtools/json-schema-ref-parser": "^15.1.2",
     "@modelcontextprotocol/sdk": "^1.17.4",
-    "@utcp/sdk": "^1.1.1",
+    "@utcp/sdk": "^1.2.0",
     "axios": "^1.11.0"
   },
   "devDependencies": {
