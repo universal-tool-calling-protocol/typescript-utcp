@@ -96,11 +96,20 @@ export class UtcpClient implements IUtcpClient {
       variableSubstitutor,
       root_dir
     );
-    const tempConfigWithoutOwnVars: UtcpClientConfig = { ...client.config, variables: {} };
-    client.config.variables = await client.variableSubstitutor.substitute(client.config.variables, tempConfigWithoutOwnVars);
+    // The constructor has already instantiated this client's factory-registered
+    // protocols. If initialization fails from here on, the caller never
+    // receives the client and so can never close it — so it is closed here,
+    // exactly as a finished client would be, before the failure is rethrown.
+    try {
+      const tempConfigWithoutOwnVars: UtcpClientConfig = { ...client.config, variables: {} };
+      client.config.variables = await client.variableSubstitutor.substitute(client.config.variables, tempConfigWithoutOwnVars);
 
-    // Register initial manuals specified in the config
-    await client.registerManuals(client.config.manual_call_templates || []);
+      // Register initial manuals specified in the config
+      await client.registerManuals(client.config.manual_call_templates || []);
+    } catch (error) {
+      await client.close().catch(() => {});
+      throw error;
+    }
 
     return client;
   }

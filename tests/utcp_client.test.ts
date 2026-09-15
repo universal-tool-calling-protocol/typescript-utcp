@@ -774,3 +774,41 @@ describe("per-client protocol instances (communicationProtocolFactories)", () =>
     expect(made[1].closed).toBe(1);
   });
 });
+
+describe("UtcpClient.create closes what it created when initialization fails", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+  let originalFactories: { [type: string]: () => CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+    originalFactories = { ...CommunicationProtocol.communicationProtocolFactories };
+  });
+
+  afterEach(() => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+    CommunicationProtocol.communicationProtocolFactories = { ...originalFactories };
+  });
+
+  test("a factory instance made for a client whose create() rejects is closed, not orphaned", async () => {
+    class ClosableMock extends MockCommunicationProtocol {
+      closed = 0;
+      async close(): Promise<void> { this.closed += 1; }
+    }
+    const made: ClosableMock[] = [];
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => {
+      const p = new ClosableMock();
+      made.push(p);
+      return p;
+    };
+
+    // The constructor runs (so the factory fires), then variable substitution
+    // fails on a reference nothing can resolve — create() rejects and the
+    // caller never gets a client to close.
+    await expect(
+      UtcpClient.create(process.cwd(), { variables: { DERIVED: "${NOWHERE_TO_BE_FOUND}" } }),
+    ).rejects.toThrow();
+
+    expect(made).toHaveLength(1);
+    expect(made[0].closed).toBe(1);
+  });
+});
