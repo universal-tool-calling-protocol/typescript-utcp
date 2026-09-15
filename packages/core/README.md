@@ -195,7 +195,7 @@ async getRequiredVariablesForTool(toolName: string): Promise<string[]>
 async close(): Promise<void>
 ```
 
-Closes all communication protocols and releases resources.
+Closes the protocol instances this client created (those registered as factories — see *Shared Instances vs. Per-Client Instances*) and releases their resources. Shared instances are used by every client in the process and are left running; they live as long as the process that registered them.
 
 ## Variable Management
 
@@ -299,6 +299,21 @@ CallTemplateSerializer.registerCallTemplate(
 CommunicationProtocol.communicationProtocols['custom_type'] = 
   new CustomCommunicationProtocol();
 ```
+
+### Shared Instances vs. Per-Client Instances
+
+A protocol registered in `communicationProtocols` is an **instance shared by every `UtcpClient` in the process**, and so is any state it keeps. That is right for state that *should* be process-wide — a credential cache, a registry a decorator writes into — and wrong for state that belongs to one client.
+
+For a protocol that holds **connections**, register a **factory** instead. `UtcpClient.create` calls it once per client, so each client gets its own instance, its own connections, and its own teardown on `close()`:
+
+```typescript
+CommunicationProtocol.communicationProtocolFactories['custom_type'] =
+  () => new CustomCommunicationProtocol();
+```
+
+This is what makes "a client per tenant / per user / per pooled connection" actually isolate them, rather than every client reaching into one shared instance. A type registered as a factory wins over the same type registered as an instance, so a plugin migrates by moving its registration from one map to the other and callers change nothing.
+
+`@utcp/mcp` registers this way — MCP sessions (and, for stdio, child processes) belong to the client that opened them. `@utcp/http` stays a shared instance: its OAuth token cache is meant to be reused across clients.
 
 ## Advanced Usage
 

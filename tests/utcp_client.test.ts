@@ -1,5 +1,5 @@
 // packages/core/tests/utcp_client.test.ts
-import { test, expect, afterAll, beforeAll, afterEach, describe } from "bun:test";
+import { test, expect, afterAll, beforeAll, afterEach, describe, spyOn } from "bun:test";
 import { Subprocess } from "bun";
 import path from "path";
 import { writeFile, unlink } from "fs/promises";
@@ -667,5 +667,262 @@ describe("allowed_communication_protocols Tests", () => {
     expect(result.manual.tools.length).toBe(0);
 
     await client.close();
+  });
+});
+describe("per-client protocol instances (communicationProtocolFactories)", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+  let originalFactories: { [type: string]: () => CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+    originalFactories = { ...CommunicationProtocol.communicationProtocolFactories };
+  });
+
+  afterEach(() => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+    CommunicationProtocol.communicationProtocolFactories = { ...originalFactories };
+  });
+
+  const manual = (): UtcpManual => ({
+    utcp_version: "1.0",
+    manual_version: "1.0",
+    tools: [
+      {
+        name: "ping",
+        description: "A tool",
+        inputs: { type: "object", properties: {} },
+        outputs: { type: "object", properties: {} },
+        tags: [],
+        tool_call_template: { name: "svc", call_template_type: "http", url: "https://api.example.com/ping", http_method: "GET" } as HttpCallTemplate,
+      } as Tool,
+    ],
+  });
+
+  const registerSvc = (client: UtcpClient) =>
+    client.registerManual({ name: "svc", call_template_type: "http", url: "https://api.example.com/manual", http_method: "GET" } as HttpCallTemplate);
+
+  test("a factory-registered protocol gives every client its own instance", async () => {
+    const made: MockCommunicationProtocol[] = [];
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => {
+      const p = new MockCommunicationProtocol(manual(), `result_${made.length}`);
+      made.push(p);
+      return p;
+    };
+
+    const a = await UtcpClient.create(process.cwd(), {});
+    const b = await UtcpClient.create(process.cwd(), {});
+    await registerSvc(a);
+    await registerSvc(b);
+
+    expect(made).toHaveLength(2);
+    // Each client routes to the instance built for it — not to a shared one.
+    expect(await a.callTool("svc.ping", {})).toBe("result_0");
+    expect(await b.callTool("svc.ping", {})).toBe("result_1");
+    await a.close();
+    await b.close();
+  });
+
+  test("an instance-registered protocol is still shared by every client", async () => {
+    const shared = new MockCommunicationProtocol(manual(), "from_shared");
+    CommunicationProtocol.communicationProtocols["http"] = shared;
+
+    const a = await UtcpClient.create(process.cwd(), {});
+    const b = await UtcpClient.create(process.cwd(), {});
+    await registerSvc(a);
+    await registerSvc(b);
+
+    expect(await a.callTool("svc.ping", {})).toBe("from_shared");
+    expect(await b.callTool("svc.ping", {})).toBe("from_shared");
+    await a.close();
+    await b.close();
+  });
+
+  test("a factory wins over an instance of the same type, so a plugin can migrate", async () => {
+    CommunicationProtocol.communicationProtocols["http"] = new MockCommunicationProtocol(manual(), "from_instance");
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => new MockCommunicationProtocol(manual(), "from_factory");
+
+    const client = await UtcpClient.create(process.cwd(), {});
+    await registerSvc(client);
+    expect(await client.callTool("svc.ping", {})).toBe("from_factory");
+    await client.close();
+  });
+
+  test("close() drains this client's own instance and leaves other clients working", async () => {
+    class ClosableMock extends MockCommunicationProtocol {
+      closed = 0;
+      async close(): Promise<void> { this.closed += 1; }
+    }
+    const made: ClosableMock[] = [];
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => {
+      const p = new ClosableMock(manual(), `result_${made.length}`);
+      made.push(p);
+      return p;
+    };
+
+    const a = await UtcpClient.create(process.cwd(), {});
+    const b = await UtcpClient.create(process.cwd(), {});
+    await registerSvc(a);
+    await registerSvc(b);
+
+    await a.close();
+    expect(made[0].closed).toBe(1);
+    // b's own instance is untouched, and b still works — the whole point of
+    // per-client instances is that one client's teardown is not everyone's.
+    expect(made[1].closed).toBe(0);
+    expect(await b.callTool("svc.ping", {})).toBe("result_1");
+    await b.close();
+    expect(made[1].closed).toBe(1);
+  });
+});
+
+describe("UtcpClient.create closes what it created when initialization fails", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+  let originalFactories: { [type: string]: () => CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+    originalFactories = { ...CommunicationProtocol.communicationProtocolFactories };
+  });
+
+  afterEach(() => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+    CommunicationProtocol.communicationProtocolFactories = { ...originalFactories };
+  });
+
+  class ClosableMock extends MockCommunicationProtocol {
+    closed = 0;
+    async close(): Promise<void> { this.closed += 1; }
+  }
+  const factoryOf = (made: ClosableMock[]) => () => {
+    const p = new ClosableMock();
+    made.push(p);
+    return p;
+  };
+  // Variable substitution fails on a reference nothing can resolve, so
+  // create() rejects after the protocols exist and the caller never gets a
+  // client to close.
+  const UNRESOLVABLE = { variables: { DERIVED: "${NOWHERE_TO_BE_FOUND}" } };
+
+  test("a factory instance made for a client whose create() rejects is closed, not orphaned", async () => {
+    const made: ClosableMock[] = [];
+    CommunicationProtocol.communicationProtocolFactories["http"] = factoryOf(made);
+
+    await expect(UtcpClient.create(process.cwd(), UNRESOLVABLE)).rejects.toThrow();
+
+    expect(made).toHaveLength(1);
+    expect(made[0].closed).toBe(1);
+  });
+
+  test("a factory that throws leaves the instances made before it closed, not orphaned", async () => {
+    const made: ClosableMock[] = [];
+    CommunicationProtocol.communicationProtocolFactories["http"] = factoryOf(made);
+    CommunicationProtocol.communicationProtocolFactories["cli"] = () => {
+      throw new Error("cli protocol cannot be built here");
+    };
+
+    await expect(UtcpClient.create(process.cwd(), {})).rejects.toThrow("cannot be built");
+
+    expect(made).toHaveLength(1);
+    expect(made[0].closed).toBe(1);
+  });
+
+  test("a shared instance is not closed for a client that never finished — other clients are using it", async () => {
+    const shared = new ClosableMock();
+    CommunicationProtocol.communicationProtocols["cli"] = shared;
+    const made: ClosableMock[] = [];
+    CommunicationProtocol.communicationProtocolFactories["http"] = factoryOf(made);
+
+    await expect(UtcpClient.create(process.cwd(), UNRESOLVABLE)).rejects.toThrow();
+
+    expect(made[0].closed).toBe(1);
+    expect(shared.closed).toBe(0);
+  });
+
+  test("a cleanup that fails is reported, and the initialization failure stays the error the caller sees", async () => {
+    class UnclosableMock extends MockCommunicationProtocol {
+      async close(): Promise<void> { throw new Error("transport refused to close"); }
+    }
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => new UnclosableMock();
+    const reported = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // The caller sees the ORIGINAL failure (the unresolved variable), not
+      // the cleanup's — and the cleanup's is not lost either.
+      await expect(UtcpClient.create(process.cwd(), UNRESOLVABLE)).rejects.toThrow(/NOWHERE_TO_BE_FOUND/);
+      expect(reported.mock.calls.some((c) => String(c[0]).includes("closing the protocols it had created failed"))).toBe(true);
+    } finally {
+      reported.mockRestore();
+    }
+  });
+});
+
+describe("UtcpClient.close closes what the client owns, not what the process shares", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+  let originalFactories: { [type: string]: () => CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+    originalFactories = { ...CommunicationProtocol.communicationProtocolFactories };
+  });
+
+  afterEach(() => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+    CommunicationProtocol.communicationProtocolFactories = { ...originalFactories };
+  });
+
+  test("a shared instance survives a client's close(); the client's own instance does not", async () => {
+    class ClosableMock extends MockCommunicationProtocol {
+      closed = 0;
+      async close(): Promise<void> { this.closed += 1; }
+    }
+    const shared = new ClosableMock();
+    CommunicationProtocol.communicationProtocols["cli"] = shared;
+    let own!: ClosableMock;
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => (own = new ClosableMock());
+
+    const client = await UtcpClient.create(process.cwd(), {});
+    await client.close();
+
+    expect(own.closed).toBe(1);
+    // Every other client in the process is still using this one.
+    expect(shared.closed).toBe(0);
+  });
+});
+
+describe("UtcpClient closes every owned protocol even when one of them fails to close", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+  let originalFactories: { [type: string]: () => CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+    originalFactories = { ...CommunicationProtocol.communicationProtocolFactories };
+  });
+
+  afterEach(() => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+    CommunicationProtocol.communicationProtocolFactories = { ...originalFactories };
+  });
+
+  test("a close() that rejects first does not leave the other owned protocol still open", async () => {
+    // The failing close rejects IMMEDIATELY; the healthy one takes a tick. A
+    // first-rejection-wins close would return before the healthy one ended.
+    class FailingMock extends MockCommunicationProtocol {
+      async close(): Promise<void> { throw new Error("transport refused to close"); }
+    }
+    class SlowMock extends MockCommunicationProtocol {
+      closed = 0;
+      async close(): Promise<void> {
+        await new Promise((r) => setTimeout(r, 20));
+        this.closed += 1;
+      }
+    }
+    let slow!: SlowMock;
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => new FailingMock();
+    CommunicationProtocol.communicationProtocolFactories["cli"] = () => (slow = new SlowMock());
+
+    const client = await UtcpClient.create(process.cwd(), {});
+    // The failure is still surfaced — with the cause inside it.
+    await expect(client.close()).rejects.toThrow(/failed to close/);
+    // ...but only after every owned protocol has finished closing.
+    expect(slow.closed).toBe(1);
   });
 });

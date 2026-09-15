@@ -30,14 +30,29 @@ import { ConcurrentToolRepositoryConfigSerializer } from '../interfaces/concurre
  */
 export class UtcpClient implements IUtcpClient {
   private _registeredCommProtocols: Map<string, CommunicationProtocol> = new Map();
+  /**
+   * The protocol instances this client CREATED (from factories) and therefore
+   * owns: they are what its teardown closes. Instances taken from the shared
+   * registry are the process's, used by every other client too, and are never
+   * closed on this client's behalf.
+   */
+  private _ownedCommProtocols: CommunicationProtocol[] = [];
   public readonly postProcessors: ToolPostProcessor[];
 
+  /**
+   * Wires the shared protocols and post-processors only. The per-client
+   * protocol instances are adopted afterwards by `create()`, inside its
+   * cleanup guard — a constructor cannot await, so nothing that needs closing
+   * on failure is created here.
+   */
   protected constructor(
     public readonly config: UtcpClientConfig,
     public readonly variableSubstitutor: VariableSubstitutor,
     public readonly root_dir: string | null = null,
   ) {
-    // Dynamically populate registered protocols from the global registry
+    // Dynamically populate registered protocols from the global registry.
+    // Instances are SHARED with every other client in the process; whatever
+    // state they hold is shared too.
     for (const [type, protocol] of Object.entries(CommunicationProtocol.communicationProtocols)) {
       this._registeredCommProtocols.set(type, protocol);
     }
@@ -46,6 +61,35 @@ export class UtcpClient implements IUtcpClient {
       const serializer = new ToolPostProcessorConfigSerializer();
       return serializer.validateDict(ppConfig as any) as ToolPostProcessor;
     });
+  }
+
+  /**
+   * Instantiate this client's own protocols from the factory registry. Each
+   * instance is recorded as owned the moment it exists, so a factory that
+   * throws part-way leaves the ones before it closable. Registered over the
+   * shared instances, so a factory wins over an instance of the same type —
+   * which is what lets a plugin migrate by moving its registration.
+   */
+  private _adoptFactoryProtocols(): void {
+    for (const [type, createProtocol] of Object.entries(CommunicationProtocol.communicationProtocolFactories)) {
+      const protocol = createProtocol();
+      this._ownedCommProtocols.push(protocol);
+      this._registeredCommProtocols.set(type, protocol);
+    }
+  }
+
+  /**
+   * Close every protocol this client created. Shared instances are left to
+   * the process. Every close is waited for even when one fails — a rejection
+   * must not leave the others still in flight when this returns — and the
+   * failures are then thrown together.
+   */
+  private async _closeOwnedProtocols(): Promise<void> {
+    const results = await Promise.allSettled(this._ownedCommProtocols.map(protocol => protocol.close()));
+    const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []));
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `${failures.length} of ${results.length} owned protocol(s) failed to close`);
+    }
   }
 
   /**
@@ -87,11 +131,29 @@ export class UtcpClient implements IUtcpClient {
       variableSubstitutor,
       root_dir
     );
-    const tempConfigWithoutOwnVars: UtcpClientConfig = { ...client.config, variables: {} };
-    client.config.variables = await client.variableSubstitutor.substitute(client.config.variables, tempConfigWithoutOwnVars);
+    // Everything from here on can fail, and the caller never receives a client
+    // it could close — so whatever this client CREATED is closed here before
+    // the failure is rethrown. Only what it created: the shared instances are
+    // in use by every other client and are not this one's to close.
+    try {
+      client._adoptFactoryProtocols();
 
-    // Register initial manuals specified in the config
-    await client.registerManuals(client.config.manual_call_templates || []);
+      const tempConfigWithoutOwnVars: UtcpClientConfig = { ...client.config, variables: {} };
+      client.config.variables = await client.variableSubstitutor.substitute(client.config.variables, tempConfigWithoutOwnVars);
+
+      // Register initial manuals specified in the config
+      await client.registerManuals(client.config.manual_call_templates || []);
+    } catch (error) {
+      try {
+        await client._closeOwnedProtocols();
+      } catch (cleanupError) {
+        // The initialization failure stays the error the caller sees; the
+        // cleanup failure is reported rather than swallowed, because the
+        // caller has no client through which to retry it.
+        console.error('UtcpClient.create failed, and closing the protocols it had created failed too:', cleanupError);
+      }
+      throw error;
+    }
 
     return client;
   }
@@ -382,13 +444,12 @@ export class UtcpClient implements IUtcpClient {
    * Closes the UTCP client and releases any resources held by its communication protocols.
    */
   public async close(): Promise<void> {
-    const closePromises: Promise<void>[] = [];
-    for (const protocol of this._registeredCommProtocols.values()) {
-      if (typeof protocol.close === 'function') {
-        closePromises.push(protocol.close());
-      }
-    }
-    await Promise.all(closePromises);
-    console.log('UTCP Client and all registered protocols closed.');
+    // Only what this client created. A shared instance is in use by every
+    // other client in the process — closing it here would clear their state
+    // too (a credential cache, a decorator's registry), which is the
+    // cross-client damage per-client instances exist to prevent. Shared
+    // instances live as long as the process that registered them.
+    await this._closeOwnedProtocols();
+    console.log('UTCP Client closed, with the protocols it owned.');
   }
 }
