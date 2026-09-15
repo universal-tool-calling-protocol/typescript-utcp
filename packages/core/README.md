@@ -195,7 +195,7 @@ async getRequiredVariablesForTool(toolName: string): Promise<string[]>
 async close(): Promise<void>
 ```
 
-Closes all communication protocols and releases resources.
+Closes the protocol instances this client created (those registered as factories — see *Shared Instances vs. Per-Client Instances*) and releases their resources. Shared instances are used by every client in the process and are left running; they live as long as the process that registered them.
 
 ## Variable Management
 
