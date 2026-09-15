@@ -13,7 +13,13 @@ import { McpCommunicationProtocol } from './mcp_communication_protocol';
  */
 export function register(override: boolean = false): void {
   CallTemplateSerializer.registerCallTemplate('mcp', new McpCallTemplateSerializer(), override);
-  CommunicationProtocol.communicationProtocols['mcp'] = new McpCommunicationProtocol();
+  // A FACTORY, not an instance: this protocol holds live MCP sessions (and,
+  // for stdio, child processes). Shared, every client in the process would
+  // dial into one cache — so a caller that creates a client per tenant, per
+  // user, or per pooled connection would not actually be isolating them, and
+  // one client's `close()` would drain everyone's sessions. One instance per
+  // client gives each its own connections and its own teardown.
+  CommunicationProtocol.communicationProtocolFactories['mcp'] = () => new McpCommunicationProtocol();
 }
 
 // Automatically register MCP plugin on import

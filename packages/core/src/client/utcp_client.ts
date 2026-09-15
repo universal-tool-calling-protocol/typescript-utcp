@@ -37,9 +37,18 @@ export class UtcpClient implements IUtcpClient {
     public readonly variableSubstitutor: VariableSubstitutor,
     public readonly root_dir: string | null = null,
   ) {
-    // Dynamically populate registered protocols from the global registry
+    // Dynamically populate registered protocols from the global registry.
+    // Instances are SHARED with every other client in the process; whatever
+    // state they hold is shared too.
     for (const [type, protocol] of Object.entries(CommunicationProtocol.communicationProtocols)) {
       this._registeredCommProtocols.set(type, protocol);
+    }
+    // Factories are instantiated PER CLIENT, so a protocol that holds
+    // connections gives this client its own and isolates it from every other.
+    // Registered last, so a factory wins over an instance of the same type —
+    // which is what lets a plugin migrate by moving its registration.
+    for (const [type, createProtocol] of Object.entries(CommunicationProtocol.communicationProtocolFactories)) {
+      this._registeredCommProtocols.set(type, createProtocol());
     }
     // Instantiate post-processors dynamically based on registered factories
     this.postProcessors = config.post_processing.map(ppConfig => {

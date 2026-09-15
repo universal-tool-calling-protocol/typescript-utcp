@@ -669,3 +669,108 @@ describe("allowed_communication_protocols Tests", () => {
     await client.close();
   });
 });
+describe("per-client protocol instances (communicationProtocolFactories)", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+  let originalFactories: { [type: string]: () => CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+    originalFactories = { ...CommunicationProtocol.communicationProtocolFactories };
+  });
+
+  afterEach(() => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+    CommunicationProtocol.communicationProtocolFactories = { ...originalFactories };
+  });
+
+  const manual = (): UtcpManual => ({
+    utcp_version: "1.0",
+    manual_version: "1.0",
+    tools: [
+      {
+        name: "ping",
+        description: "A tool",
+        inputs: { type: "object", properties: {} },
+        outputs: { type: "object", properties: {} },
+        tags: [],
+        tool_call_template: { name: "svc", call_template_type: "http", url: "https://api.example.com/ping", http_method: "GET" } as HttpCallTemplate,
+      } as Tool,
+    ],
+  });
+
+  const registerSvc = (client: UtcpClient) =>
+    client.registerManual({ name: "svc", call_template_type: "http", url: "https://api.example.com/manual", http_method: "GET" } as HttpCallTemplate);
+
+  test("a factory-registered protocol gives every client its own instance", async () => {
+    const made: MockCommunicationProtocol[] = [];
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => {
+      const p = new MockCommunicationProtocol(manual(), `result_${made.length}`);
+      made.push(p);
+      return p;
+    };
+
+    const a = await UtcpClient.create(process.cwd(), {});
+    const b = await UtcpClient.create(process.cwd(), {});
+    await registerSvc(a);
+    await registerSvc(b);
+
+    expect(made).toHaveLength(2);
+    // Each client routes to the instance built for it — not to a shared one.
+    expect(await a.callTool("svc.ping", {})).toBe("result_0");
+    expect(await b.callTool("svc.ping", {})).toBe("result_1");
+    await a.close();
+    await b.close();
+  });
+
+  test("an instance-registered protocol is still shared by every client", async () => {
+    const shared = new MockCommunicationProtocol(manual(), "from_shared");
+    CommunicationProtocol.communicationProtocols["http"] = shared;
+
+    const a = await UtcpClient.create(process.cwd(), {});
+    const b = await UtcpClient.create(process.cwd(), {});
+    await registerSvc(a);
+    await registerSvc(b);
+
+    expect(await a.callTool("svc.ping", {})).toBe("from_shared");
+    expect(await b.callTool("svc.ping", {})).toBe("from_shared");
+    await a.close();
+    await b.close();
+  });
+
+  test("a factory wins over an instance of the same type, so a plugin can migrate", async () => {
+    CommunicationProtocol.communicationProtocols["http"] = new MockCommunicationProtocol(manual(), "from_instance");
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => new MockCommunicationProtocol(manual(), "from_factory");
+
+    const client = await UtcpClient.create(process.cwd(), {});
+    await registerSvc(client);
+    expect(await client.callTool("svc.ping", {})).toBe("from_factory");
+    await client.close();
+  });
+
+  test("close() drains this client's own instance and leaves other clients working", async () => {
+    class ClosableMock extends MockCommunicationProtocol {
+      closed = 0;
+      async close(): Promise<void> { this.closed += 1; }
+    }
+    const made: ClosableMock[] = [];
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => {
+      const p = new ClosableMock(manual(), `result_${made.length}`);
+      made.push(p);
+      return p;
+    };
+
+    const a = await UtcpClient.create(process.cwd(), {});
+    const b = await UtcpClient.create(process.cwd(), {});
+    await registerSvc(a);
+    await registerSvc(b);
+
+    await a.close();
+    expect(made[0].closed).toBe(1);
+    // b's own instance is untouched, and b still works — the whole point of
+    // per-client instances is that one client's teardown is not everyone's.
+    expect(made[1].closed).toBe(0);
+    expect(await b.callTool("svc.ping", {})).toBe("result_1");
+    await b.close();
+    expect(made[1].closed).toBe(1);
+  });
+});
