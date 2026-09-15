@@ -1072,3 +1072,58 @@ describe("a failed registration does not strand the sessions it opened", () => {
     expect((protocol as any)._sessionRefs.get(keyA)).toBe(1);
   });
 });
+
+describe("concurrent registrations do not close each other's sessions", () => {
+  const CONFIG = { transport: "stdio" as const, command: "true" };
+
+  test("a failing registration leaves the session an in-flight registration is using", async () => {
+    // The race: `_getOrCreateSession` hands the second attempt the session the
+    // first one opened, and the first has not finished (so under a
+    // "no registered owner" test it looks unowned). A reference held for the
+    // duration of the attempt is what makes it an owner.
+    const protocol = new McpCommunicationProtocol();
+    let openTheGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openTheGate = resolve; });
+    let firstDiscovery = true;
+    const clients = new Map<string, { closed: number }>();
+
+    (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+      if (sn === "b") return Promise.reject(new Error("no route to 'b'"));
+      const key = (protocol as any)._sessionKey(sn, sc, a);
+      const cached = (protocol as any)._mcpSessions.get(key);
+      if (cached) return Promise.resolve(cached);
+      const client = {
+        closed: 0,
+        close() { this.closed += 1; return Promise.resolve(); },
+        // Only the FIRST discovery waits — that is the in-flight attempt.
+        listTools: async () => {
+          if (firstDiscovery) { firstDiscovery = false; await gate; }
+          return { tools: [{ name: "t", description: "", inputSchema: {}, outputSchema: {} }] };
+        },
+      };
+      clients.set(sn, client);
+      (protocol as any)._mcpSessions.set(key, client);
+      return Promise.resolve(client);
+    };
+
+    // m1 opens 'a' and parks inside discovery.
+    const m1 = protocol.registerManual({} as any, {
+      name: "m1", call_template_type: "mcp", config: { mcpServers: { a: CONFIG } },
+    } as McpCallTemplate);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // m2 reuses 'a', then fails on 'b' — its cleanup must not touch 'a'.
+    const r2 = await protocol.registerManual({} as any, {
+      name: "m2", call_template_type: "mcp", config: { mcpServers: { a: CONFIG, b: CONFIG } },
+    } as McpCallTemplate);
+    expect(r2.success).toBe(false);
+    expect(clients.get("a")!.closed).toBe(0);
+
+    // m1 finishes against a session that is still alive.
+    openTheGate();
+    const r1 = await m1;
+    expect(r1.success).toBe(true);
+    expect(clients.get("a")!.closed).toBe(0);
+    expect((protocol as any)._mcpSessions.has((protocol as any)._sessionKey("a", CONFIG, undefined))).toBe(true);
+  });
+});

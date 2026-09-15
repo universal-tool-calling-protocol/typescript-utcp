@@ -129,14 +129,15 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
    */
   private _sessionCreations: Map<string, Promise<McpClient>> = new Map();
   /**
-   * How many registered manuals hold each session, keyed by sessionKey. Two
-   * manuals with identical config+auth share one session (that is the point of
-   * keying by config+auth), so a session must outlive the FIRST owner to
-   * deregister and close only when the LAST one does. `registerManual`
-   * increments; `deregisterManual` decrements and closes at zero. Independent
-   * of whether the session is currently live — a session-class failure may
-   * have evicted it (issue #34) while its owners still hold it; they simply
-   * redial on the next call.
+   * How many holders each session has, keyed by sessionKey — registered
+   * manuals, plus registrations still in flight. Two manuals with identical
+   * config+auth share one session (that is the point of keying by
+   * config+auth), so a session must outlive the FIRST holder to let go and
+   * close only when the LAST one does. `registerManual` takes a reference for
+   * the duration of the attempt and keeps it on success; `deregisterManual`
+   * releases it. Independent of whether the session is currently live — a
+   * session-class failure may have evicted it (issue #34) while its holders
+   * still hold it; they simply redial on the next call.
    */
   private _sessionRefs: Map<string, number> = new Map();
   /**
@@ -671,6 +672,20 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     const allTools: Tool[] = [];
     const allErrors: string[] = [];
 
+    // Hold a reference for the WHOLE attempt, before any dialing. A
+    // registration in flight is an owner: `_getOrCreateSession` hands it a
+    // session another manual may have opened, and a concurrent attempt that
+    // fails must not close a session this one is still discovering through.
+    // Kept on success — it becomes this manual's registration reference — and
+    // released otherwise; a release that drops the LAST reference closes the
+    // session, which is also what cleans up an attempt that connected some of
+    // its servers and then failed.
+    const sessionKeys = Object.entries(mcpCallTemplate.config.mcpServers).map(([serverName, serverConfig]) =>
+      this._sessionKey(serverName, serverConfig, mcpCallTemplate.auth),
+    );
+    for (const sessionKey of sessionKeys) this._retainSession(sessionKey);
+    let keepReferences = false;
+
     for (const [serverName, serverConfig] of Object.entries(mcpCallTemplate.config.mcpServers)) {
       try {
         this._logInfo(`Discovering tools from MCP server '${serverName}'...`);
@@ -710,42 +725,26 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       }
     }
 
-    // Build the result BEFORE taking any reference: `parse` can throw, and a
-    // reference taken for a registration that then rejects would be held by a
-    // manual the client never saved and will never deregister.
-    let manual;
+    // `parse` is the only thing left that can throw (the discovery loop above
+    // catches per server), so the references are released on exactly the two
+    // ways this can end without a saved manual: a validation throw, and a
+    // result whose success is false. The UTCP client saves — and therefore
+    // later deregisters — a manual only when registration succeeded, so only
+    // a successful one may keep its references.
     try {
-      manual = UtcpManualSchema.parse({ tools: allTools });
-    } catch (e) {
-      await this._discardUnownedSessions(mcpCallTemplate);
-      throw e;
-    }
-    const success = allErrors.length === 0;
-    if (!success) {
-      // A registration can fail AFTER some of its servers connected (one
-      // server discovers, the next refuses). Those sessions were opened for a
-      // manual the client will not save and will never deregister, so nothing
-      // would ever close them — for stdio, that strands a child process until
-      // the process-wide drain.
-      await this._discardUnownedSessions(mcpCallTemplate);
-    }
-    if (success) {
-      // Take a session reference for each server, so a later deregister of
-      // THIS manual closes only what it opened. Only on success: the UTCP
-      // client saves — and therefore later deregisters — a manual only when
-      // registration succeeded, so a failed registration must leave no
-      // reference for a deregister that will never come.
-      for (const [serverName, serverConfig] of Object.entries(mcpCallTemplate.config.mcpServers)) {
-        this._retainSession(this._sessionKey(serverName, serverConfig, mcpCallTemplate.auth));
+      const manual = UtcpManualSchema.parse({ tools: allTools });
+      keepReferences = allErrors.length === 0;
+      return {
+        manualCallTemplate: mcpCallTemplate,
+        manual,
+        success: keepReferences,
+        errors: allErrors,
+      };
+    } finally {
+      if (!keepReferences) {
+        for (const sessionKey of sessionKeys) await this._releaseSession(sessionKey);
       }
     }
-
-    return {
-      manualCallTemplate: mcpCallTemplate,
-      manual,
-      success,
-      errors: allErrors,
-    };
   }
 
   public async deregisterManual(caller: IUtcpClient, manualCallTemplate: CallTemplate): Promise<void> {
@@ -763,27 +762,7 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     }
   }
 
-  /**
-   * Close this template's sessions that NOBODY owns — the cleanup for a
-   * registration that failed after opening some of them.
-   *
-   * Ownership is the test, not "did this attempt dial it": a session may have
-   * been cached by an already-registered manual with the same config+auth, and
-   * closing that one would pull it out from under its owner. A key with no
-   * entry in `_sessionRefs` has no registered manual behind it, so this
-   * attempt is the only thing that could have opened it.
-   */
-  private async _discardUnownedSessions(mcpCallTemplate: McpCallTemplate): Promise<void> {
-    if (!mcpCallTemplate.config?.mcpServers) return;
-    for (const [serverName, serverConfig] of Object.entries(mcpCallTemplate.config.mcpServers)) {
-      const sessionKey = this._sessionKey(serverName, serverConfig, mcpCallTemplate.auth);
-      if (!this._sessionRefs.has(sessionKey)) {
-        await this._cleanupSession(sessionKey);
-      }
-    }
-  }
-
-  /** One more registered manual holds this session. */
+  /** One more holder of this session — a registered manual, or a registration in flight. */
   private _retainSession(sessionKey: string): void {
     this._sessionRefs.set(sessionKey, (this._sessionRefs.get(sessionKey) ?? 0) + 1);
   }
