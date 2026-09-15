@@ -141,12 +141,13 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
    */
   private _sessionRefs: Map<string, number> = new Map();
   /**
-   * `close()` is a DRAIN, not a terminal state. This instance is registered
-   * once at module load (`index.ts`) into the process-wide
-   * `CommunicationProtocol.communicationProtocols` registry, and EVERY
-   * `UtcpClient` shares it — `UtcpClient.close()` closes the registered
-   * protocols, so one client closing must not brick MCP for every other
-   * client in the process (which is exactly what a sticky closed flag did).
+   * `close()` is a DRAIN, not a terminal state. `index.ts` registers this
+   * protocol as a FACTORY, so each `UtcpClient` gets its own instance and
+   * `UtcpClient.close()` drains only that client's sessions. The instance
+   * still has to survive its own drain: a client may be closed and then used
+   * again, and a caller that registers this class as a shared INSTANCE
+   * instead (the registry still allows it) has every client closing the one
+   * they share. A sticky closed flag bricked exactly those cases.
    *
    * `_activeDrains` counts close() sweeps currently running — session
    * creation refuses while ANY is in flight. A counter, not a boolean:

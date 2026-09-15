@@ -14,8 +14,35 @@ export abstract class CommunicationProtocol {
 
   /**
    * Mapping of communication protocol types to their respective implementations.
+   *
+   * An instance registered here is SHARED by every `UtcpClient` in the
+   * process, and so is any state it keeps. That is the right home for state
+   * that should be process-wide — a credential cache, a registry a decorator
+   * writes into — and the wrong one for per-connection state. For that, see
+   * {@link communicationProtocolFactories}.
    */
   static communicationProtocols: { [type: string]: CommunicationProtocol } = {};
+
+  /**
+   * Mapping of communication protocol types to FACTORIES, for protocols whose
+   * state belongs to one client rather than to the process.
+   *
+   * `UtcpClient.create` calls the factory once per client, so each client gets
+   * its own instance and its own connections — one client per tenant, per
+   * user, per pooled connection actually isolates, instead of every client
+   * sharing whatever the one registered instance holds. `close()` then tears
+   * down that client's own instance.
+   *
+   * A type registered here wins over the same type in
+   * {@link communicationProtocols}, so a plugin migrates by moving its
+   * registration from one map to the other, and callers need change nothing.
+   *
+   * ```ts
+   * CommunicationProtocol.communicationProtocolFactories['mcp'] =
+   *   () => new McpCommunicationProtocol();
+   * ```
+   */
+  static communicationProtocolFactories: { [type: string]: () => CommunicationProtocol } = {};
 
   /**
    * Registers a manual and its tools.
