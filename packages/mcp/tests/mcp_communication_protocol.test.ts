@@ -1007,3 +1007,68 @@ describe("deregisterManual closes the sessions registerManual opened", () => {
     expect((protocol as any)._sessionRefs.has(key)).toBe(false);
   });
 });
+
+describe("a failed registration does not strand the sessions it opened", () => {
+  const CONFIG = { transport: "stdio" as const, command: "true" };
+
+  /** Dials succeed for every server except those named in `failing`. */
+  function seedPartial(protocol: McpCommunicationProtocol, failing: string[]) {
+    const clients = new Map<string, { closed: number }>();
+    (protocol as any)._getOrCreateSession = (sn: any, sc: any, a: any) => {
+      if (failing.includes(sn)) return Promise.reject(new Error(`no route to '${sn}'`));
+      const key = (protocol as any)._sessionKey(sn, sc, a);
+      const cached = (protocol as any)._mcpSessions.get(key);
+      if (cached) return Promise.resolve(cached);
+      const client = {
+        closed: 0,
+        close() { this.closed += 1; return Promise.resolve(); },
+        listTools: () => Promise.resolve({ tools: [{ name: "t", description: "", inputSchema: {}, outputSchema: {} }] }),
+      };
+      clients.set(sn, client);
+      (protocol as any)._mcpSessions.set(key, client);
+      return Promise.resolve(client);
+    };
+    return clients;
+  }
+
+  const twoServers = (name: string): McpCallTemplate => ({
+    name,
+    call_template_type: "mcp",
+    config: { mcpServers: { a: CONFIG, b: CONFIG } },
+  });
+
+  test("closes the session a partly-failed registration opened (no owner would ever close it)", async () => {
+    const protocol = new McpCommunicationProtocol();
+    const clients = seedPartial(protocol, ["b"]);
+    const keyA = (protocol as any)._sessionKey("a", CONFIG, undefined);
+
+    // 'a' discovers, 'b' refuses → the manual is not registered, so the client
+    // will never deregister it and nothing else holds 'a'.
+    const result = await protocol.registerManual({} as any, twoServers("m"));
+    expect(result.success).toBe(false);
+
+    expect(clients.get("a")!.closed).toBe(1);
+    expect((protocol as any)._mcpSessions.has(keyA)).toBe(false);
+    expect((protocol as any)._sessionRefs.size).toBe(0);
+  });
+
+  test("leaves a session another registered manual owns", async () => {
+    const protocol = new McpCommunicationProtocol();
+    const clients = seedPartial(protocol, ["b"]);
+    const keyA = (protocol as any)._sessionKey("a", CONFIG, undefined);
+
+    // An established owner of server 'a' (same config+auth → same session).
+    const owner: McpCallTemplate = { name: "owner", call_template_type: "mcp", config: { mcpServers: { a: CONFIG } } };
+    await protocol.registerManual({} as any, owner);
+    expect((protocol as any)._sessionRefs.get(keyA)).toBe(1);
+
+    // A second manual fails on 'b' after reusing 'a' — the owner's session
+    // must survive the cleanup.
+    const result = await protocol.registerManual({} as any, twoServers("m"));
+    expect(result.success).toBe(false);
+
+    expect(clients.get("a")!.closed).toBe(0);
+    expect((protocol as any)._mcpSessions.has(keyA)).toBe(true);
+    expect((protocol as any)._sessionRefs.get(keyA)).toBe(1);
+  });
+});

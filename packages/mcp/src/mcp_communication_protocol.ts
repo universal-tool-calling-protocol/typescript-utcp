@@ -713,8 +713,22 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
     // Build the result BEFORE taking any reference: `parse` can throw, and a
     // reference taken for a registration that then rejects would be held by a
     // manual the client never saved and will never deregister.
-    const manual = UtcpManualSchema.parse({ tools: allTools });
+    let manual;
+    try {
+      manual = UtcpManualSchema.parse({ tools: allTools });
+    } catch (e) {
+      await this._discardUnownedSessions(mcpCallTemplate);
+      throw e;
+    }
     const success = allErrors.length === 0;
+    if (!success) {
+      // A registration can fail AFTER some of its servers connected (one
+      // server discovers, the next refuses). Those sessions were opened for a
+      // manual the client will not save and will never deregister, so nothing
+      // would ever close them — for stdio, that strands a child process until
+      // the process-wide drain.
+      await this._discardUnownedSessions(mcpCallTemplate);
+    }
     if (success) {
       // Take a session reference for each server, so a later deregister of
       // THIS manual closes only what it opened. Only on success: the UTCP
@@ -745,6 +759,26 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       // nothing and every deregistered manual's session leaked.
       for (const [serverName, serverConfig] of Object.entries(mcpCallTemplate.config.mcpServers)) {
         await this._releaseSession(this._sessionKey(serverName, serverConfig, mcpCallTemplate.auth));
+      }
+    }
+  }
+
+  /**
+   * Close this template's sessions that NOBODY owns — the cleanup for a
+   * registration that failed after opening some of them.
+   *
+   * Ownership is the test, not "did this attempt dial it": a session may have
+   * been cached by an already-registered manual with the same config+auth, and
+   * closing that one would pull it out from under its owner. A key with no
+   * entry in `_sessionRefs` has no registered manual behind it, so this
+   * attempt is the only thing that could have opened it.
+   */
+  private async _discardUnownedSessions(mcpCallTemplate: McpCallTemplate): Promise<void> {
+    if (!mcpCallTemplate.config?.mcpServers) return;
+    for (const [serverName, serverConfig] of Object.entries(mcpCallTemplate.config.mcpServers)) {
+      const sessionKey = this._sessionKey(serverName, serverConfig, mcpCallTemplate.auth);
+      if (!this._sessionRefs.has(sessionKey)) {
+        await this._cleanupSession(sessionKey);
       }
     }
   }
