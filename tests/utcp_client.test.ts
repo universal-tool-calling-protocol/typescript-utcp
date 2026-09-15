@@ -669,3 +669,93 @@ describe("allowed_communication_protocols Tests", () => {
     await client.close();
   });
 });
+describe("registerCommunicationProtocol (per-client protocol instances)", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+  });
+
+  afterEach(() => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+  });
+
+  const manualWithOneTool = (): UtcpManual => ({
+    utcp_version: "1.0",
+    manual_version: "1.0",
+    tools: [
+      {
+        name: "ping",
+        description: "A tool",
+        inputs: { type: "object", properties: {} },
+        outputs: { type: "object", properties: {} },
+        tags: [],
+        tool_call_template: {
+          name: "svc",
+          call_template_type: "http",
+          url: "https://api.example.com/ping",
+          http_method: "GET",
+        } as HttpCallTemplate,
+      } as Tool,
+    ],
+  });
+
+  test("routes this client's calls to the instance it was given, not the global one", async () => {
+    const shared = new MockCommunicationProtocol(manualWithOneTool(), "from_shared");
+    CommunicationProtocol.communicationProtocols["http"] = shared;
+
+    const client = await UtcpClient.create(process.cwd(), {});
+    const own = new MockCommunicationProtocol(manualWithOneTool(), "from_own");
+    client.registerCommunicationProtocol("http", own);
+
+    await client.registerManual({
+      name: "svc",
+      call_template_type: "http",
+      url: "https://api.example.com/manual",
+      http_method: "GET",
+    } as HttpCallTemplate);
+
+    expect(await client.callTool("svc.ping", {})).toBe("from_own");
+    await client.close();
+  });
+
+  test("leaves the global registry and other clients untouched", async () => {
+    const shared = new MockCommunicationProtocol(manualWithOneTool(), "from_shared");
+    CommunicationProtocol.communicationProtocols["http"] = shared;
+
+    const isolated = await UtcpClient.create(process.cwd(), {});
+    isolated.registerCommunicationProtocol("http", new MockCommunicationProtocol(manualWithOneTool(), "from_own"));
+
+    // A client created afterwards still copies the global instance.
+    const other = await UtcpClient.create(process.cwd(), {});
+    await other.registerManual({
+      name: "svc",
+      call_template_type: "http",
+      url: "https://api.example.com/manual",
+      http_method: "GET",
+    } as HttpCallTemplate);
+
+    expect(CommunicationProtocol.communicationProtocols["http"]).toBe(shared);
+    expect(await other.callTool("svc.ping", {})).toBe("from_shared");
+    await isolated.close();
+    await other.close();
+  });
+
+  test("close() closes the instance this client holds", async () => {
+    CommunicationProtocol.communicationProtocols["http"] = new MockCommunicationProtocol(manualWithOneTool());
+
+    class ClosableMock extends MockCommunicationProtocol {
+      closed = 0;
+      async close(): Promise<void> {
+        this.closed += 1;
+      }
+    }
+    const own = new ClosableMock(manualWithOneTool(), "from_own");
+
+    const client = await UtcpClient.create(process.cwd(), {});
+    client.registerCommunicationProtocol("http", own);
+    await client.close();
+
+    expect(own.closed).toBe(1);
+  });
+});

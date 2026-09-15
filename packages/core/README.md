@@ -300,6 +300,22 @@ CommunicationProtocol.communicationProtocols['custom_type'] =
   new CustomCommunicationProtocol();
 ```
 
+### Per-Client Protocol Instances
+
+The global registry is shared by every client in the process, and so is each protocol instance in it — including any per-connection state the instance keeps (an MCP session, a token cache). When a client must not share that state with others — one client per user, one client per pooled connection — give it its own instance. It applies to that client only; the global registry and other clients are unaffected.
+
+```typescript
+import { UtcpClient } from '@utcp/sdk';
+import { McpCommunicationProtocol } from '@utcp/mcp';
+
+const client = await UtcpClient.create(process.cwd(), config);
+// Before registerManual: manuals registered earlier keep their connection
+// on the previous instance.
+client.registerCommunicationProtocol('mcp', new McpCommunicationProtocol());
+await client.registerManual(mcpManualTemplate);
+// client.close() closes the instances this client holds.
+```
+
 ## Advanced Usage
 
 ### Custom Tool Repository

@@ -114,6 +114,29 @@ export class UtcpClient implements IUtcpClient {
     }
 
   /**
+   * Gives THIS client its own implementation of a communication protocol, in
+   * place of the process-wide instance it copied from
+   * `CommunicationProtocol.communicationProtocols` at construction.
+   *
+   * The global registry is shared by every client in the process, and so is
+   * the protocol instance in it — including whatever per-connection state that
+   * instance keeps (an MCP session, a token cache). A caller that needs
+   * isolation — one client per user, one client per pooled connection —
+   * registers a fresh instance here. It applies to this client only: the
+   * global registry and every other client are untouched, and `close()`
+   * closes the instances this client holds at that time.
+   *
+   * Call it before `registerManual`: a manual already registered through the
+   * previous instance keeps its connection there.
+   *
+   * @param type The call template type the protocol serves (e.g. `"mcp"`).
+   * @param protocol The instance this client should use for that type.
+   */
+  public registerCommunicationProtocol(type: string, protocol: CommunicationProtocol): void {
+    this._registeredCommProtocols.set(type, protocol);
+  }
+
+  /**
    * Registers a single tool manual.
    * @param manualCallTemplate The call template describing how to discover and connect to the manual.
    * @returns A promise that resolves to a result object indicating success or failure.
