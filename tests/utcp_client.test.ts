@@ -887,3 +887,42 @@ describe("UtcpClient.close closes what the client owns, not what the process sha
     expect(shared.closed).toBe(0);
   });
 });
+
+describe("UtcpClient closes every owned protocol even when one of them fails to close", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+  let originalFactories: { [type: string]: () => CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+    originalFactories = { ...CommunicationProtocol.communicationProtocolFactories };
+  });
+
+  afterEach(() => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+    CommunicationProtocol.communicationProtocolFactories = { ...originalFactories };
+  });
+
+  test("a close() that rejects first does not leave the other owned protocol still open", async () => {
+    // The failing close rejects IMMEDIATELY; the healthy one takes a tick. A
+    // first-rejection-wins close would return before the healthy one ended.
+    class FailingMock extends MockCommunicationProtocol {
+      async close(): Promise<void> { throw new Error("transport refused to close"); }
+    }
+    class SlowMock extends MockCommunicationProtocol {
+      closed = 0;
+      async close(): Promise<void> {
+        await new Promise((r) => setTimeout(r, 20));
+        this.closed += 1;
+      }
+    }
+    let slow!: SlowMock;
+    CommunicationProtocol.communicationProtocolFactories["http"] = () => new FailingMock();
+    CommunicationProtocol.communicationProtocolFactories["cli"] = () => (slow = new SlowMock());
+
+    const client = await UtcpClient.create(process.cwd(), {});
+    // The failure is still surfaced — with the cause inside it.
+    await expect(client.close()).rejects.toThrow(/failed to close/);
+    // ...but only after every owned protocol has finished closing.
+    expect(slow.closed).toBe(1);
+  });
+});

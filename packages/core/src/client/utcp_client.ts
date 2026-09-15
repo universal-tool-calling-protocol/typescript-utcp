@@ -78,9 +78,18 @@ export class UtcpClient implements IUtcpClient {
     }
   }
 
-  /** Close every protocol this client created. Shared instances are left to the process. */
+  /**
+   * Close every protocol this client created. Shared instances are left to
+   * the process. Every close is waited for even when one fails — a rejection
+   * must not leave the others still in flight when this returns — and the
+   * failures are then thrown together.
+   */
   private async _closeOwnedProtocols(): Promise<void> {
-    await Promise.all(this._ownedCommProtocols.map(protocol => protocol.close()));
+    const results = await Promise.allSettled(this._ownedCommProtocols.map(protocol => protocol.close()));
+    const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []));
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `${failures.length} of ${results.length} owned protocol(s) failed to close`);
+    }
   }
 
   /**
