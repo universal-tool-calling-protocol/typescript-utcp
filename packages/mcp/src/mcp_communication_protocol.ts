@@ -98,6 +98,20 @@ function isMcpToolsResponse(data: unknown): data is { tools: McpToolResponse[] }
   );
 }
 
+/** JSON Schema keywords whose value is a map of name -> sub-schema. */
+const SCHEMA_MAP_KEYWORDS: ReadonlySet<string> = new Set([
+  'properties', 'patternProperties', 'definitions', '$defs', 'dependentSchemas',
+]);
+/** JSON Schema keywords whose value is a single sub-schema. */
+const SCHEMA_VALUE_KEYWORDS: ReadonlySet<string> = new Set([
+  'items', 'additionalItems', 'additionalProperties', 'unevaluatedProperties',
+  'unevaluatedItems', 'not', 'if', 'then', 'else', 'contains', 'propertyNames',
+]);
+/** JSON Schema keywords whose value is a list of sub-schemas. */
+const SCHEMA_LIST_KEYWORDS: ReadonlySet<string> = new Set([
+  'allOf', 'anyOf', 'oneOf', 'prefixItems',
+]);
+
 /**
  * MCP communication protocol implementation for the UTCP client.
  *
@@ -181,6 +195,8 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
   /**
    * Dereferences a JSON Schema by resolving all $refs and $defs.
    * This fixes the issue with FastMCP 2.0+ servers that use $defs references.
+   * Boolean sub-schemas (`true` / `false`) are then rewritten into their
+   * object equivalents so the result satisfies the UTCP `JsonSchemaSchema`.
    * 
    * @param schema - The schema to dereference
    * @returns The dereferenced schema with all references inlined
@@ -190,27 +206,68 @@ export class McpCommunicationProtocol implements CommunicationProtocol {
       return schema as JsonSchema;
     }
     
+    let resolved: unknown = schema;
     try {
       // Check if schema contains $defs or $ref
       const schemaStr = JSON.stringify(schema);
-      if (!schemaStr.includes('$defs') && !schemaStr.includes('$ref')) {
-        // No refs to resolve, return as-is
-        return schema as JsonSchema;
+      if (schemaStr.includes('$defs') || schemaStr.includes('$ref')) {
+        // Dereference the schema (inlines all $refs and $defs). `circular:
+        // 'ignore'` keeps recursive schemas (e.g. self-referencing filter
+        // grammars) from throwing — the cycle is left as a live reference
+        // instead of failing the whole tool discovery.
+        resolved = await $RefParser.dereference(schema as any, {
+          dereference: { circular: 'ignore' },
+        });
       }
-      
-      // Dereference the schema (inlines all $refs and $defs). `circular:
-      // 'ignore'` keeps recursive schemas (e.g. self-referencing filter
-      // grammars) from throwing — the cycle is left as a live reference
-      // instead of failing the whole tool discovery.
-      const dereferenced = await $RefParser.dereference(schema as any, {
-        dereference: { circular: 'ignore' },
-      });
-      return dereferenced as JsonSchema;
     } catch (error: any) {
-      // If dereferencing fails, log a warning and return the original schema
+      // If dereferencing fails, log a warning and keep the original schema
       this._logError(`Failed to dereference schema, using original:`, error.message);
-      return schema as JsonSchema;
     }
+    return this._normalizeBooleanSchemas(resolved, new WeakMap()) as JsonSchema;
+  }
+
+  /**
+   * JSON Schema allows `true` / `false` wherever a sub-schema is expected, and
+   * MCP servers do emit them (e.g. `properties: { value: true }`). The UTCP
+   * `JsonSchemaSchema` only accepts objects in those positions, so a single
+   * boolean would fail validation and drop the whole manual. Rewrites
+   * `true` -> `{}` and `false` -> `{ not: {} }` in every sub-schema position.
+   *
+   * `seen` caches each visited node's clone so a definition shared by several
+   * `$ref`s (or a cycle left behind by `circular: 'ignore'`) maps to one
+   * normalized object instead of recursing forever.
+   */
+  private _normalizeBooleanSchemas(node: unknown, seen: WeakMap<object, unknown>): unknown {
+    if (!node || typeof node !== 'object') return node;
+    if (seen.has(node)) return seen.get(node);
+
+    const toSchema = (value: unknown): unknown =>
+      value === true ? {} : value === false ? { not: {} } : this._normalizeBooleanSchemas(value, seen);
+
+    if (Array.isArray(node)) {
+      const out: unknown[] = [];
+      seen.set(node, out);
+      for (const value of node) out.push(this._normalizeBooleanSchemas(value, seen));
+      return out;
+    }
+
+    const out: Record<string, unknown> = {};
+    seen.set(node, out);
+    for (const [key, value] of Object.entries(node)) {
+      if (SCHEMA_MAP_KEYWORDS.has(key) && value && typeof value === 'object' && !Array.isArray(value)) {
+        out[key] = Object.fromEntries(
+          Object.entries(value).map(([name, schema]) => [name, toSchema(schema)]),
+        );
+      } else if (SCHEMA_VALUE_KEYWORDS.has(key)) {
+        // `items` may also be a tuple of schemas (draft-04 through draft-07).
+        out[key] = Array.isArray(value) ? value.map(toSchema) : toSchema(value);
+      } else if (SCHEMA_LIST_KEYWORDS.has(key) && Array.isArray(value)) {
+        out[key] = value.map(toSchema);
+      } else {
+        out[key] = this._normalizeBooleanSchemas(value, seen);
+      }
+    }
+    return out;
   }
 
   /**
