@@ -870,26 +870,6 @@ export class OpenApiConverter {
   }
 
   /**
-   * Validate (and, when relative, resolve) an OpenAPI OAuth2
-   * `tokenUrl` at conversion time. Returns the URL that should be
-   * embedded in the generated `OAuth2Auth` so the runtime check in
-   * `_handleOAuth2` sees an absolute URL instead of an unresolved
-   * relative reference (which would always fail at runtime). Backs
-   * GHSA-8cp3-qxj6-px34.
-   *
-   * OpenAPI 3.0 / 3.1 explicitly allow `tokenUrl` to be a relative
-   * reference resolved against the spec's own location. Behaviour:
-   *
-   *   - Absolute URL: run `ensureSecureUrl` and return as-is.
-   *   - Relative URL with `spec_url` available: resolve against
-   *     `spec_url`, validate the resolved URL, and return it so the
-   *     runtime check sees the absolute form. This also closes the
-   *     `"tokenUrl": "//host/token"` scheme-relative bypass.
-   *   - Relative URL without `spec_url`: nothing to resolve against.
-   *     Return the original string unchanged; the runtime check will
-   *     reject it later.
-   */
-  /**
    * The server's URL with its declared variables filled in.
    *
    * OpenAPI 3.x lets `servers[].url` carry `{name}` placeholders whose
@@ -936,6 +916,26 @@ export class OpenApiConverter {
     }
   }
 
+  /**
+   * Validate (and, when relative, resolve) an OpenAPI OAuth2
+   * `tokenUrl` at conversion time. Returns the URL that should be
+   * embedded in the generated `OAuth2Auth` so the runtime check in
+   * `_handleOAuth2` sees an absolute URL instead of an unresolved
+   * relative reference (which would always fail at runtime). Backs
+   * GHSA-8cp3-qxj6-px34.
+   *
+   * OpenAPI 3.0 / 3.1 explicitly allow `tokenUrl` to be a relative
+   * reference resolved against the spec's own location. Behaviour:
+   *
+   *   - Absolute URL: run `ensureSecureUrl` and return as-is.
+   *   - Relative URL with `spec_url` available: resolve against
+   *     `spec_url`, validate the resolved URL, and return it so the
+   *     runtime check sees the absolute form. This also closes the
+   *     `"tokenUrl": "//host/token"` scheme-relative bypass.
+   *   - Relative URL without `spec_url`: nothing to resolve against.
+   *     Return the original string unchanged; the runtime check will
+   *     reject it later.
+   */
   private _validateTokenUrlEagerly(tokenUrl: string): string {
     let absoluteParse: URL | null = null;
     try {
