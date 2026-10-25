@@ -150,7 +150,7 @@ export class OpenApiConverter {
     }
     // 2. OpenAPI 3.0 servers field
     else if (this.spec.servers && Array.isArray(this.spec.servers) && this.spec.servers.length > 0 && this.spec.servers[0].url) {
-      baseUrl = this.spec.servers[0].url;
+      baseUrl = OpenApiConverter._resolveServerVariables(this.spec.servers[0]);
     }
     // 3. OpenAPI 2.0 host and basePath fields
     else if (this.spec.host) {
@@ -193,6 +193,12 @@ export class OpenApiConverter {
           'If you trust this spec, set the call template\'s `base_url` override explicitly to bypass this check.',
       );
     }
+
+    // A server URL whose host is still a placeholder after variable
+    // resolution (`http://{host}:7777`) becomes a path parameter of every
+    // generated tool. The protocols refuse, at call time, to let such an
+    // argument move a request onto loopback (`ensureLoopbackWasDeclared`),
+    // so it is not judged here.
 
     const paths = this.spec.paths || {};
     for (const [path, pathItem] of Object.entries(paths)) {
@@ -883,6 +889,49 @@ export class OpenApiConverter {
    *     Return the original string unchanged; the runtime check will
    *     reject it later.
    */
+  /**
+   * The server's URL with its declared variables filled in.
+   *
+   * OpenAPI 3.x lets `servers[].url` carry `{name}` placeholders whose
+   * values come from `servers[].variables`; every such variable must
+   * declare a `default`, and the default is what a client is meant to use.
+   * A placeholder without a declared default is left in place.
+   */
+  private static _resolveServerVariables(server: Record<string, any>): string {
+    let url = server?.url;
+    if (typeof url !== 'string') return '/';
+    const variables = server?.variables;
+    if (variables && typeof variables === 'object') {
+      for (const [name, variable] of Object.entries(variables as Record<string, any>)) {
+        if (!variable || typeof variable !== 'object' || !('default' in variable)) continue;
+        const def = (variable as Record<string, any>).default;
+        if (def === null || def === undefined) continue;
+        url = url.split(`{${name}}`).join(String(def));
+      }
+    }
+    return url;
+  }
+
+  /**
+   * A remote spec may not route the token POST at loopback.
+   *
+   * The same boundary `convert` enforces for `servers[0].url`: the
+   * client-credentials POST is a request the agent host makes on the spec's
+   * behalf, so a spec fetched from a non-loopback origin must not aim it at
+   * the agent's own interface. `ensureSecureUrl` cannot catch this -- it
+   * allows loopback by design, for local development. A spec fetched from
+   * loopback keeps the local-dev exemption.
+   */
+  private _rejectRemoteLoopbackTokenUrl(tokenUrl: string): void {
+    if (this.spec_url && !isLoopbackUrl(this.spec_url) && isLoopbackUrl(tokenUrl)) {
+      throw new Error(
+        `Security error: OpenAPI spec fetched from ${JSON.stringify(this.spec_url)} ` +
+          `declares a loopback OAuth2 tokenUrl (${JSON.stringify(tokenUrl)}). ` +
+          "A remote spec is not allowed to route the client-credentials POST at the agent's own loopback interface.",
+      );
+    }
+  }
+
   private _validateTokenUrlEagerly(tokenUrl: string): string {
     let absoluteParse: URL | null = null;
     try {
@@ -893,6 +942,7 @@ export class OpenApiConverter {
 
     if (absoluteParse && absoluteParse.protocol && absoluteParse.hostname) {
       ensureSecureUrl(tokenUrl, 'OAuth2 tokenUrl in OpenAPI spec');
+      this._rejectRemoteLoopbackTokenUrl(tokenUrl);
       return tokenUrl;
     }
 
@@ -914,6 +964,7 @@ export class OpenApiConverter {
           resolved,
           'OAuth2 tokenUrl in OpenAPI spec (resolved from relative URL)',
         );
+        this._rejectRemoteLoopbackTokenUrl(resolved);
         return resolved;
       }
     }
