@@ -36,6 +36,17 @@ describe("HttpCommunicationProtocol remote-loopback SSRF guard", () => {
     ).toThrow("loopback tool URL");
   });
 
+  test("rejects a literal loopback host whose port is a placeholder", () => {
+    // `http://localhost:{port}/...` does not parse as a URL, so `isLoopbackUrl`
+    // alone let it through, and the call-time rule then granted it the
+    // literal-loopback exemption with a port of the caller's choosing.
+    for (const url of ["http://localhost:{port}/secret", "http://127.0.0.1:{port}/secret"]) {
+      expect(() =>
+        protocol._rejectRemoteLoopbackToolUrls("https://attacker.example/manual", manualWith(url)),
+      ).toThrow("loopback tool URL");
+    }
+  });
+
   test("allows a loopback tool URL when discovery itself is loopback (local dev)", () => {
     expect(() =>
       protocol._rejectRemoteLoopbackToolUrls(
