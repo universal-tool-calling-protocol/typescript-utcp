@@ -179,6 +179,151 @@ export function ensureSecureUrl(url: string, context?: string): void {
   );
 }
 
+// ---------------------------------------------------------------------------
+// URL templates: a placeholder in the origin.
+// ---------------------------------------------------------------------------
+
+/**
+ * The scheme and authority of an absolute URL template, kept verbatim so a
+ * placeholder in the host position survives for the caller to notice (the
+ * WHATWG parser refuses `{` in a host outright, so `new URL` cannot be used
+ * on a template).
+ */
+const ABSOLUTE_URL_ORIGIN = /^\s*([A-Za-z][A-Za-z0-9+.\-]*):\/\/([^/?#]*)/;
+
+/** The host inside a URL authority (`user:pw@host:port`), verbatim. */
+function hostOfAuthority(authority: string): string {
+  const at = authority.lastIndexOf('@');
+  const hostport = at === -1 ? authority : authority.slice(at + 1);
+  if (hostport.startsWith('[')) {
+    const end = hostport.indexOf(']');
+    return end === -1 ? hostport.slice(1) : hostport.slice(1, end);
+  }
+  const colon = hostport.indexOf(':');
+  return colon === -1 ? hostport : hostport.slice(0, colon);
+}
+
+/**
+ * The host `urlTemplate` names literally, or `null` when the template has no
+ * absolute origin of its own (a relative reference, or not a URL at all) and
+ * when the host position holds a placeholder, so the host is only decided at
+ * call time.
+ */
+export function urlTemplateLiteralHost(urlTemplate: string): string | null {
+  if (typeof urlTemplate !== 'string') return null;
+  const m = urlTemplate.match(ABSOLUTE_URL_ORIGIN);
+  if (!m) return null;
+  const host = hostOfAuthority(m[2]);
+  if (!host || host.includes('{')) return null;
+  return host.toLowerCase();
+}
+
+/**
+ * True if `urlTemplate` literally names a loopback host.
+ *
+ * The placeholder-aware twin of `isLoopbackUrl`: a template whose host is a
+ * placeholder is *not* loopback, whatever it resolves to later.
+ */
+export function urlTemplateHostIsLoopback(urlTemplate: string): boolean {
+  const host = urlTemplateLiteralHost(urlTemplate);
+  if (host === null) return false;
+  // Run the literal host through the WHATWG parser so every spelling the
+  // loopback classifier understands (`127.1`, `0x7f000001`, IPv4-mapped
+  // IPv6) is normalised exactly as it is for a resolved URL.
+  const literal = host.includes(':') ? `[${host}]` : host;
+  return isLoopbackUrl(`http://${literal}/`);
+}
+
+/**
+ * Throw if filling `urlTemplate` produced a loopback `resolvedUrl` that the
+ * template did not declare.
+ *
+ * `ensureSecureUrl` allows plain HTTP to loopback so local development
+ * works, and `rejectRemoteLoopbackToolUrls` and the OpenAPI converter judge
+ * a *template* at registration. All three see `http://{host}:7777/admin` as
+ * harmless; the request it produces with `host=127.0.0.1` is not. This is
+ * the one rule that covers a host chosen by a tool argument, and it holds
+ * whoever wrote the template: a request may target loopback only when the
+ * template itself names a loopback host literally. Tool arguments may choose
+ * the rest of the URL, never move the request onto the agent's own interface.
+ *
+ * Call it on every tool invocation, right after `ensureSecureUrl` on the
+ * resolved URL.
+ */
+export function ensureLoopbackWasDeclared(urlTemplate: string, resolvedUrl: string, context: string): void {
+  if (!isLoopbackUrl(resolvedUrl)) return;
+  if (urlTemplateHostIsLoopback(urlTemplate)) return;
+  throw new Error(
+    `Security error during ${context}: the resolved URL ${JSON.stringify(resolvedUrl)} ` +
+      "targets the agent's own loopback interface, but the call template's URL " +
+      `(${JSON.stringify(urlTemplate)}) does not name a loopback host literally. Tool ` +
+      'arguments substituted into a URL template may choose the path, never the host; ' +
+      'write the loopback host in the template itself.',
+  );
+}
+
+/**
+ * Reject a remotely-discovered manual that points at loopback.
+ *
+ * `ensureSecureUrl` deliberately permits loopback HTTP so local development
+ * works, which leaves one gap: a manual fetched from a remote (non-loopback)
+ * origin can still aim requests at the agent's own loopback interface. The
+ * OpenAPI converter closes this for specs it converts; hand-written UTCP
+ * manuals bypass the converter, so the same rule is applied here, by every
+ * protocol that discovers manuals (http, SSE, streamable HTTP). A manual
+ * fetched from loopback (local dev) is exempt, exactly as the converter
+ * exempts a local spec.
+ *
+ * `discoveryUrl` must be the *final* response URL after any redirects: a
+ * loopback discovery URL that redirected to a remote origin is serving a
+ * remote manual and must not keep the local-dev exemption.
+ *
+ * Two things a remote manual may not do, per tool:
+ *   - declare a loopback tool URL (the original rule);
+ *   - declare a loopback OAuth2 `token_url`: the client-credentials POST is a
+ *     request the agent host makes on the manual's behalf, exactly like a
+ *     tool call, and it must not be aimed at loopback either.
+ *
+ * A tool URL whose host is a placeholder (`http://{host}:7777/admin`, or the
+ * whole-URL opt-in `{url}`) is accepted here: the host is only known at call
+ * time, and that is where `ensureLoopbackWasDeclared` refuses to let the
+ * arguments move the request onto loopback. Judging the template here would
+ * only break manuals whose tools legitimately take their destination from an
+ * argument.
+ */
+export function rejectRemoteLoopbackToolUrls(
+  discoveryUrl: string,
+  manual: { tools?: Array<any> },
+  context: string = 'manual discovery',
+): void {
+  if (isLoopbackUrl(discoveryUrl)) return;
+  for (const tool of manual.tools || []) {
+    const toolName = JSON.stringify(tool?.name);
+    const callTemplate = tool?.tool_call_template;
+    const toolUrl = callTemplate?.url;
+    if (typeof toolUrl === 'string') {
+      // Both classifiers: a template whose port is a placeholder
+      // (`http://localhost:{port}/x`) does not parse as a URL, yet it names a
+      // loopback host as literally as any other.
+      if (isLoopbackUrl(toolUrl) || urlTemplateHostIsLoopback(toolUrl)) {
+        throw new Error(
+          `Security error during ${context}: a manual fetched from ${JSON.stringify(discoveryUrl)} ` +
+            `declares a loopback tool URL (${JSON.stringify(toolUrl)}) for tool ${toolName}. ` +
+            "A remote manual is not allowed to redirect tool calls at the agent's own loopback interface.",
+        );
+      }
+    }
+    const tokenUrl = callTemplate?.auth?.token_url;
+    if (typeof tokenUrl === 'string' && (isLoopbackUrl(tokenUrl) || urlTemplateHostIsLoopback(tokenUrl))) {
+      throw new Error(
+        `Security error during ${context}: a manual fetched from ${JSON.stringify(discoveryUrl)} ` +
+          `declares a loopback OAuth2 token URL (${JSON.stringify(tokenUrl)}) for tool ${toolName}. ` +
+          "A remote manual is not allowed to route the client-credentials POST at the agent's own loopback interface.",
+      );
+    }
+  }
+}
+
 /**
  * Refuse CR/LF in attacker-influenceable strings that will land in
  * HTTP headers.
@@ -374,6 +519,7 @@ function scrubCrossOriginCredentials(
  *   - On a 3xx with a `Location` header, resolves the target against
  *     the current URL and runs `ensureSecureUrl` on it before
  *     issuing the next hop. Rejection raises immediately.
+ *   - Never follows a redirect into loopback from a non-loopback URL.
  *   - Caps the chain at `maxHops` (default 5).
  *   - Mirrors RFC 7231 method semantics: 303 forces GET and drops
  *     the request body; other 3xx statuses preserve method and body.
@@ -444,6 +590,23 @@ export async function safeRequestWithRedirects<T = any>(
 
     const nextUrl = new URL(location, currentUrl).toString();
     ensureSecureUrl(nextUrl, `${context} (redirect target)`);
+    // Never follow a redirect INTO loopback from a non-loopback URL. The
+    // loopback allowance in `ensureSecureUrl` exists for requests the
+    // caller addressed to loopback (local development); a remote server
+    // must not be able to steer a request at the agent's own services,
+    // nor make a loopback-served manual look locally discovered
+    // (`rejectRemoteLoopbackToolUrls` judges by the final URL, which this
+    // rule keeps honest: a final loopback URL means the chain started on
+    // loopback and never left it). Sister of python-utcp's fix in
+    // utcp-http 1.1.14 (GHSA-2r98-cv5v-cj65).
+    if (isLoopbackUrl(nextUrl) && !isLoopbackUrl(currentUrl)) {
+      throw new Error(
+        `Security error during ${context} (redirect target): ${JSON.stringify(currentUrl)} ` +
+          `redirected to the loopback address ${JSON.stringify(nextUrl)}. A redirect is never ` +
+          'followed into loopback from a non-loopback origin: the loopback allowance is for ' +
+          'requests addressed to loopback by the caller, not for ones a remote server steers there.',
+      );
+    }
 
     // Strip credential-bearing fields when the redirect crosses to a
     // different origin. Mirrors fetch / requests / curl: without this

@@ -11,7 +11,7 @@ import { UtcpManual, UtcpManualSerializer } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { IUtcpClient } from '@utcp/sdk';
 import { SseCallTemplate, SseCallTemplateSchema } from './sse_call_template';
-import { ensureSecureUrl, assertNoCrlf } from './_security';
+import { ensureSecureUrl, ensureLoopbackWasDeclared, assertNoCrlf, rejectRemoteLoopbackToolUrls } from './_security';
 import { applyAuth, finalizeAuthHeaders, fetchOAuth2Token, AuthLogger } from './_auth';
 import { readErrorDetail } from './_text';
 import { buildUrlWithPathParams } from './_url';
@@ -171,6 +171,10 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
       // Discovery returns the manual as a plain JSON document.
       const responseText = await response.text();
       const utcpManual = new UtcpManualSerializer().validateDict(JSON.parse(responseText));
+      // A manual fetched from a remote origin may not aim tool calls, or the
+      // OAuth2 token POST, at the agent's own loopback interface. `redirect:
+      // 'error'` above means `url` is the URL the manual really came from.
+      rejectRemoteLoopbackToolUrls(url, utcpManual);
 
       this._logInfo(`Discovered ${utcpManual.tools.length} tools from '${provider.name}'`);
 
@@ -263,6 +267,11 @@ export class SseCommunicationProtocol implements CommunicationProtocol {
 
     // Security check: re-validate the resolved URL before each invocation.
     ensureSecureUrl(url, 'tool invocation');
+    // A loopback destination must be written in the template itself: a
+    // placeholder in the host (`http://{host}:7777/admin`) would let the
+    // tool's arguments move the request onto the agent's own interface
+    // after every registration-time check has passed.
+    ensureLoopbackWasDeclared(provider.url, url, 'tool invocation');
 
     // The rest of the arguments are query parameters
     const queryParams: Record<string, any> = { ...remainingArgs };
