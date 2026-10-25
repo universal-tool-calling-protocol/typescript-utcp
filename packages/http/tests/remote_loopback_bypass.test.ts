@@ -236,7 +236,16 @@ describe('OpenApiConverter remote-spec rules', () => {
     expect(c.convert().tools).toHaveLength(1);
   });
 
-  test.each(['http://127.0.0.1:46373/internal-oauth', 'https://localhost/token', '//localhost/token', 'http://[::1]:1/token'])(
+  test.each([
+    'http://127.0.0.1:46373/internal-oauth',
+    'https://localhost/token',
+    '//localhost/token',
+    'http://[::1]:1/token',
+    // A placeholder port keeps the host literal; the URL does not parse, but
+    // it names loopback all the same.
+    'http://127.0.0.1:${PORT}/token',
+    'http://localhost:{port}/token',
+  ])(
     'a remote spec may not route the token POST at loopback: %s',
     (tokenUrl) => {
       const c = new OpenApiConverter(spec([{ url: 'https://api.example.com' }], tokenUrl), remote);

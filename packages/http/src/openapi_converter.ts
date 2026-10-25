@@ -907,7 +907,15 @@ export class OpenApiConverter {
    */
   private _rejectRemoteLoopbackTokenUrl(tokenUrl: string): void {
     if (this.base_url) return;
-    if (this.spec_url && !isLoopbackUrl(this.spec_url) && isLoopbackUrl(tokenUrl)) {
+    // Both classifiers, as `rejectRemoteLoopbackToolUrls` does for a manual's
+    // `auth.token_url`: a token URL whose port is a placeholder
+    // (`http://127.0.0.1:${PORT}/token`) does not parse as a URL, yet it
+    // names a loopback host as literally as any other.
+    if (
+      this.spec_url &&
+      !isLoopbackUrl(this.spec_url) &&
+      (isLoopbackUrl(tokenUrl) || urlTemplateHostIsLoopback(tokenUrl))
+    ) {
       throw new Error(
         `Security error: OpenAPI spec fetched from ${JSON.stringify(this.spec_url)} ` +
           `declares a loopback OAuth2 tokenUrl (${JSON.stringify(tokenUrl)}). ` +
@@ -937,6 +945,11 @@ export class OpenApiConverter {
    *     reject it later.
    */
   private _validateTokenUrlEagerly(tokenUrl: string): string {
+    // Before the parse branches: a token URL that does not parse (a
+    // placeholder in its port) would otherwise skip every eager check and
+    // reach the runtime, which allows loopback by design.
+    this._rejectRemoteLoopbackTokenUrl(tokenUrl);
+
     let absoluteParse: URL | null = null;
     try {
       absoluteParse = new URL(tokenUrl);
@@ -946,7 +959,6 @@ export class OpenApiConverter {
 
     if (absoluteParse && absoluteParse.protocol && absoluteParse.hostname) {
       ensureSecureUrl(tokenUrl, 'OAuth2 tokenUrl in OpenAPI spec');
-      this._rejectRemoteLoopbackTokenUrl(tokenUrl);
       return tokenUrl;
     }
 
