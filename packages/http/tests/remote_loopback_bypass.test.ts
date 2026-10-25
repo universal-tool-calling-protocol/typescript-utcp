@@ -244,6 +244,19 @@ describe('OpenApiConverter remote-spec rules', () => {
     },
   );
 
+  test('a remote spec may not leave only the port of a loopback server open', () => {
+    const c = new OpenApiConverter(spec([{ url: 'http://127.0.0.1:{port}' }]), remote);
+    expect(() => c.convert()).toThrow(/loopback base URL/);
+  });
+
+  test('an explicit baseUrl override lifts the token URL rule too', () => {
+    const c = new OpenApiConverter(spec([{ url: 'https://api.example.com' }], 'http://127.0.0.1:9000/token'), {
+      ...remote,
+      baseUrl: 'https://api.example.com',
+    });
+    expect((c.convert().tools[0].tool_call_template as any).auth.token_url).toBe('http://127.0.0.1:9000/token');
+  });
+
   test('a local spec may use a loopback token endpoint', () => {
     const c = new OpenApiConverter(spec([{ url: 'http://127.0.0.1:8000' }], 'http://127.0.0.1:9000/token'), local);
     expect(c.convert().tools).toHaveLength(1);

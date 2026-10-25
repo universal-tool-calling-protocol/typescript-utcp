@@ -302,7 +302,10 @@ export function rejectRemoteLoopbackToolUrls(
     const callTemplate = tool?.tool_call_template;
     const toolUrl = callTemplate?.url;
     if (typeof toolUrl === 'string') {
-      if (isLoopbackUrl(toolUrl)) {
+      // Both classifiers: a template whose port is a placeholder
+      // (`http://localhost:{port}/x`) does not parse as a URL, yet it names a
+      // loopback host as literally as any other.
+      if (isLoopbackUrl(toolUrl) || urlTemplateHostIsLoopback(toolUrl)) {
         throw new Error(
           `Security error during ${context}: a manual fetched from ${JSON.stringify(discoveryUrl)} ` +
             `declares a loopback tool URL (${JSON.stringify(toolUrl)}) for tool ${toolName}. ` +
@@ -311,7 +314,7 @@ export function rejectRemoteLoopbackToolUrls(
       }
     }
     const tokenUrl = callTemplate?.auth?.token_url;
-    if (typeof tokenUrl === 'string' && isLoopbackUrl(tokenUrl)) {
+    if (typeof tokenUrl === 'string' && (isLoopbackUrl(tokenUrl) || urlTemplateHostIsLoopback(tokenUrl))) {
       throw new Error(
         `Security error during ${context}: a manual fetched from ${JSON.stringify(discoveryUrl)} ` +
           `declares a loopback OAuth2 token URL (${JSON.stringify(tokenUrl)}) for tool ${toolName}. ` +

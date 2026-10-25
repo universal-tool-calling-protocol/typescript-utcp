@@ -25,7 +25,7 @@ import { ApiKeyAuth } from '@utcp/sdk';
 import { BasicAuth } from '@utcp/sdk';
 import { OAuth2Auth } from '@utcp/sdk';
 import { HttpCallTemplate } from './http_call_template';
-import { ensureSecureUrl, isLoopbackUrl } from './_security';
+import { ensureSecureUrl, isLoopbackUrl, urlTemplateHostIsLoopback } from './_security';
 
 /**
  * All HTTP methods that OpenAPI defines as operation fields on a Path Item
@@ -183,7 +183,7 @@ export class OpenApiConverter {
       !baseUrlIsExplicitOverride &&
       this.spec_url &&
       !isLoopbackUrl(this.spec_url) &&
-      isLoopbackUrl(baseUrl)
+      (isLoopbackUrl(baseUrl) || urlTemplateHostIsLoopback(baseUrl))
     ) {
       throw new Error(
         `Security error: OpenAPI spec fetched from ${JSON.stringify(this.spec_url)} ` +
@@ -920,9 +920,13 @@ export class OpenApiConverter {
    * behalf, so a spec fetched from a non-loopback origin must not aim it at
    * the agent's own interface. `ensureSecureUrl` cannot catch this -- it
    * allows loopback by design, for local development. A spec fetched from
-   * loopback keeps the local-dev exemption.
+   * loopback keeps the local-dev exemption, and so does a spec registered
+   * with an explicit `baseUrl` override: that override is the caller's
+   * statement that they trust the spec, and it lifts the server-URL rule
+   * for the same reason.
    */
   private _rejectRemoteLoopbackTokenUrl(tokenUrl: string): void {
+    if (this.base_url) return;
     if (this.spec_url && !isLoopbackUrl(this.spec_url) && isLoopbackUrl(tokenUrl)) {
       throw new Error(
         `Security error: OpenAPI spec fetched from ${JSON.stringify(this.spec_url)} ` +

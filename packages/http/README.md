@@ -588,9 +588,11 @@ interface, and nothing that happens later may move a request there:
   local-dev exemption is judged by the final URL a manual or spec was served
   from, not the one first requested.
 
-The same rules apply to the HTTP, SSE and Streamable HTTP protocols. A spec
-you trust that trips the OpenAPI rules can be registered with an explicit
-`base_url` override, which bypasses them.
+The same rules apply to the HTTP, SSE and Streamable HTTP protocols. The
+OpenAPI rules can be lifted for a spec you trust: the text call template's
+`base_url` (or the `baseUrl` option when you construct `OpenApiConverter`
+yourself) replaces the spec's servers with your own choice and is treated as
+your trust decision for the spec's OAuth token URL as well.
 
 ### OAuth2 Token Caching
 
