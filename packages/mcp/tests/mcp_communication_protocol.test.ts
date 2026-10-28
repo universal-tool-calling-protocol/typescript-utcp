@@ -805,6 +805,83 @@ describe("McpCommunicationProtocol", () => {
       const out = await deref(schema);
       expect(out.properties.a).toEqual({ type: "string" });
     });
+
+    test("boolean sub-schemas become objects in every schema position", async () => {
+      const schema = {
+        type: "object",
+        properties: {
+          value: true,
+          other: false,
+          list: { type: "array", items: true },
+          tuple: { type: "array", items: [true, { type: "string" }], additionalItems: false },
+        },
+        patternProperties: { "^x-": true },
+        additionalProperties: false,
+        allOf: [true],
+        anyOf: [false, { type: "null" }],
+        not: true,
+        if: true,
+        then: false,
+        $defs: { anything: true },
+        // Non-schema keywords keep their booleans untouched.
+        default: true,
+        enum: [true, false],
+      };
+      const out = await deref(schema);
+      expect(out.properties.value).toEqual({});
+      expect(out.properties.other).toEqual({ not: {} });
+      expect(out.properties.list.items).toEqual({});
+      expect(out.properties.tuple.items).toEqual([{}, { type: "string" }]);
+      expect(out.properties.tuple.additionalItems).toEqual({ not: {} });
+      expect(out.patternProperties["^x-"]).toEqual({});
+      expect(out.additionalProperties).toEqual({ not: {} });
+      expect(out.allOf).toEqual([{}]);
+      expect(out.anyOf).toEqual([{ not: {} }, { type: "null" }]);
+      expect(out.not).toEqual({});
+      expect(out.if).toEqual({});
+      expect(out.then).toEqual({ not: {} });
+      expect(out.$defs.anything).toEqual({});
+      expect(out.default).toBe(true);
+      expect(out.enum).toEqual([true, false]);
+      // The input is left as it was.
+      expect(schema.properties.value).toBe(true);
+    });
+
+    test("a sub-schema object referenced twice normalizes to one shared object", async () => {
+      const shared = { type: "object", properties: { flag: true } };
+      const schema = { type: "object", properties: { a: shared, b: shared } };
+      const out = await deref(schema);
+      expect(out.properties.a).toEqual({ type: "object", properties: { flag: {} } });
+      expect(out.properties.a).toBe(out.properties.b);
+    });
+
+    test("a tool whose schema has boolean sub-schemas still registers", async () => {
+      // Mirrors a real server: one `properties.value: true` in an output
+      // schema used to fail UtcpManualSchema validation and drop the manual.
+      const fakeClient = {
+        listTools: () => Promise.resolve({
+          tools: [{
+            name: "t",
+            description: "",
+            inputSchema: { type: "object", properties: { value: true, other: false } },
+            outputSchema: { type: "object", properties: { value: true } },
+          }],
+        }),
+      };
+      const protocol = new McpCommunicationProtocol();
+      (protocol as any)._getOrCreateSession = () => Promise.resolve(fakeClient);
+      const template: McpCallTemplate = {
+        name: "m",
+        call_template_type: "mcp",
+        config: { mcpServers: { s: { transport: "stdio" as const, command: "true" } } },
+      };
+
+      const result = await protocol.registerManual(mockClient, template);
+      expect(result.success).toBe(true);
+      expect(result.manual.tools).toHaveLength(1);
+      expect(result.manual.tools[0].inputs.properties).toEqual({ value: {}, other: { not: {} } });
+      expect(result.manual.tools[0].outputs.properties).toEqual({ value: {} });
+    });
   });
 });
 describe("McpCommunicationProtocol session-creation coalescing", () => {
