@@ -36,4 +36,9 @@ describe("post_processing from the client config", () => {
     ]);
     await client.close();
   });
+
+  test("rejects an object that has postProcess but no tool_post_processor_type", async () => {
+    const malformed = { postProcess: (_c: unknown, _t: unknown, _m: unknown, r: unknown) => r };
+    await expect(UtcpClient.create(process.cwd(), { post_processing: [malformed] } as any)).rejects.toThrow(/Invalid tool post-processor type/);
+  });
 });

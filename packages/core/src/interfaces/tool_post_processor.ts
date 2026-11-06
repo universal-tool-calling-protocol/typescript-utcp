@@ -30,11 +30,12 @@ export interface ToolPostProcessor {
 }
 
 /**
- * Tells an already-constructed post-processor apart from its config dict. Both carry
+ * Tells an already-constructed post-processor apart from its config dict: both carry
  * `tool_post_processor_type`, but only a constructed one can process results.
  */
 export function isToolPostProcessor(value: unknown): value is ToolPostProcessor {
-  return typeof (value as ToolPostProcessor | null)?.postProcess === 'function';
+  const candidate = value as ToolPostProcessor | null;
+  return typeof candidate?.tool_post_processor_type === 'string' && typeof candidate?.postProcess === 'function';
 }
 
 export class ToolPostProcessorConfigSerializer extends Serializer<ToolPostProcessor> {
