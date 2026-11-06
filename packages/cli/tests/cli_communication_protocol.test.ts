@@ -146,3 +146,34 @@ describe('CliCommunicationProtocol (Multi-Command)', () => {
     expect(path.normalize(result.trim())).toContain(path.normalize(tempDir));
   });
 });
+describe('CliCommunicationProtocol (failures)', () => {
+  const cliProtocol = new CliCommunicationProtocol();
+  const isWindows = process.platform === 'win32';
+  const template = (commands: { command: string; append_to_final_output?: boolean }[]) =>
+    CliCallTemplateSchema.parse({ name: 'failure_test', call_template_type: 'cli', commands });
+
+  test.skipIf(isWindows)('rejects when the last command exits with a non-zero status', async () => {
+    const callTemplate = template([{ command: 'echo "boom" >&2; exit 3' }]);
+    await expect(cliProtocol.callTool(mockClient, 'test.fail', {}, callTemplate)).rejects.toThrow(/exited with code 3: boom/);
+  });
+
+  test.skipIf(isWindows)('still returns the output when the last command succeeds after an earlier failure', async () => {
+    const callTemplate = template([
+      { command: 'false', append_to_final_output: false },
+      { command: 'echo "recovered"' },
+    ]);
+    expect(await cliProtocol.callTool(mockClient, 'test.recover', {}, callTemplate)).toBe('recovered');
+  });
+
+  test('rejects a call that leaves a placeholder argument out, without running the command', async () => {
+    const marker = path.join(await createTempDir('temp_missing_arg'), 'ran');
+    const callTemplate = template([{ command: `echo ran > ${JSON.stringify(marker)}; echo UTCP_ARG_sql_UTCP_END UTCP_ARG_db_UTCP_END` }]);
+    await expect(cliProtocol.callTool(mockClient, 'test.missing', { db: 'x' }, callTemplate)).rejects.toThrow(/missing argument\(s\): sql/);
+    expect(await fs.access(marker).then(() => true, () => false)).toBe(false);
+  });
+
+  test('accepts an empty string as a provided argument', async () => {
+    const callTemplate = template([{ command: 'echo "<UTCP_ARG_value_UTCP_END>"' }]);
+    expect(await cliProtocol.callTool(mockClient, 'test.empty', { value: '' }, callTemplate)).toBe('<>');
+  });
+});
