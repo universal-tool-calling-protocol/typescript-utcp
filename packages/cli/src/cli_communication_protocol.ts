@@ -562,8 +562,13 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
     }
 
     if (!isWindows && commands.length > 0) {
+      const last = commands.length - 1;
+      if (commands[last]!.append_to_final_output === false) {
+        // A failing last step still explains itself even when its output is not appended.
+        scriptLines.push(`if [ "\${CMD_${last}_EXIT}" -ne 0 ]; then echo "\${CMD_${last}_OUTPUT}"; fi`);
+      }
       // The trailing echos would otherwise make every script exit 0; report the last command's status.
-      scriptLines.push(`exit "\${CMD_${commands.length - 1}_EXIT}"`);
+      scriptLines.push(`exit "\${CMD_${last}_EXIT}"`);
     }
 
     return { script: scriptLines.join('\n'), env: accumulatedEnv };
@@ -616,8 +621,19 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
         // manual, so a generous ceiling here is cheap.
       }, 60000);
 
-      // Get output based on exit code
-      const output = exitCode === 0 ? stdout : stderr;
+      if (exitCode !== 0) {
+        const detail = (stdout.trim() || stderr.trim()) || 'no output';
+        const errorMsg = `Discovery commands for CLI provider '${manualCallTemplate.name}' exited with code ${exitCode}: ${detail}`;
+        this._log_error(errorMsg);
+        return {
+          success: false,
+          manualCallTemplate,
+          manual: new UtcpManualSerializer().validateDict({ tools: [] }),
+          errors: [errorMsg],
+        };
+      }
+
+      const output = stdout;
 
       if (!output.trim()) {
         this._log_info(`No output from commands for CLI provider '${manualCallTemplate.name}'`);
@@ -774,7 +790,7 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
    */
   private _missing_args(commands: { command: string }[], toolArgs: Record<string, any>): string[] {
     const names = commands.flatMap((step) => [...step.command.matchAll(/UTCP_ARG_([a-zA-Z0-9_]+?)_UTCP_END/g)].map((m) => m[1]!));
-    return [...new Set(names)].filter((name) => !(name in toolArgs));
+    return [...new Set(names)].filter((name) => !Object.prototype.hasOwnProperty.call(toolArgs, name));
   }
 
   /**
