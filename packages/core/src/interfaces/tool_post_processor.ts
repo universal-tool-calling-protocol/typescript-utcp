@@ -29,6 +29,14 @@ export interface ToolPostProcessor {
   postProcess(caller: IUtcpClient, tool: Tool, manualCallTemplate: CallTemplate, result: any): any;
 }
 
+/**
+ * Tells an already-constructed post-processor apart from its config dict. Both carry
+ * `tool_post_processor_type`, but only a constructed one can process results.
+ */
+export function isToolPostProcessor(value: unknown): value is ToolPostProcessor {
+  return typeof (value as ToolPostProcessor | null)?.postProcess === 'function';
+}
+
 export class ToolPostProcessorConfigSerializer extends Serializer<ToolPostProcessor> {
   private static implementations: Record<string, Serializer<ToolPostProcessor>> = {};
 

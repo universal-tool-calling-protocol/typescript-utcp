@@ -5,7 +5,7 @@ import { CallTemplate, CallTemplateSchema, CallTemplateSerializer } from '../dat
 import { ToolSearchStrategy, ToolSearchStrategyConfigSerializer } from '../interfaces/tool_search_strategy';
 import { VariableLoader, VariableLoaderSchema, VariableLoaderSerializer } from '../data/variable_loader';
 import { ConcurrentToolRepository, ConcurrentToolRepositoryConfigSerializer } from '../interfaces/concurrent_tool_repository';
-import { ToolPostProcessor, ToolPostProcessorConfigSerializer } from '../interfaces/tool_post_processor';
+import { ToolPostProcessor, ToolPostProcessorConfigSerializer, isToolPostProcessor } from '../interfaces/tool_post_processor';
 import { Serializer } from '../interfaces/serializer';
 
 // Ensure core plugins are initialized before this module uses any serializers
@@ -139,6 +139,9 @@ export const UtcpClientConfigSchema = z.object({
   post_processing: z.array(z.any())
     .transform((val) => {
       return val.map(item => {
+        if (isToolPostProcessor(item)) {
+          return item;
+        }
         if (typeof item === 'object' && item !== null && 'tool_post_processor_type' in item) {
           return new ToolPostProcessorConfigSerializer().validateDict(item as Record<string, unknown>);
         }
