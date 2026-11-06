@@ -621,7 +621,8 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
         // manual, so a generous ceiling here is cheap.
       }, 60000);
 
-      if (exitCode !== 0) {
+      // On Unix the script exits with the last command's status (see _build_combined_shell_script).
+      if (process.platform !== 'win32' && exitCode !== 0) {
         const detail = (stdout.trim() || stderr.trim()) || 'no output';
         const errorMsg = `Discovery commands for CLI provider '${manualCallTemplate.name}' exited with code ${exitCode}: ${detail}`;
         this._log_error(errorMsg);
@@ -633,7 +634,7 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
         };
       }
 
-      const output = stdout;
+      const output = exitCode === 0 ? stdout : stderr;
 
       if (!output.trim()) {
         this._log_info(`No output from commands for CLI provider '${manualCallTemplate.name}'`);
@@ -754,7 +755,7 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
         output = stdout.trim() ? stdout : stderr;
       }
       
-      if (exitCode !== 0) {
+      if (!isWindows && exitCode !== 0) {
         throw new Error(`CLI tool '${toolName}' exited with code ${exitCode}: ${output.trim()}`);
       }
 
