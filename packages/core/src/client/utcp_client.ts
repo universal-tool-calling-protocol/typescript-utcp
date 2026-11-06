@@ -17,7 +17,7 @@ import { DefaultVariableSubstitutor } from '../implementations/default_variable_
 import { ensureCorePluginsInitialized } from '../plugins/plugin_loader';
 import { IUtcpClient } from '../interfaces/utcp_client_interface';
 import { ToolSearchStrategyConfigSerializer } from '../interfaces/tool_search_strategy';
-import { ToolPostProcessorConfigSerializer } from '../interfaces/tool_post_processor';
+import { ToolPostProcessorConfigSerializer, isToolPostProcessor } from '../interfaces/tool_post_processor';
 import { ConcurrentToolRepositoryConfigSerializer } from '../interfaces/concurrent_tool_repository';
 
 /**
@@ -57,10 +57,11 @@ export class UtcpClient implements IUtcpClient {
       this._registeredCommProtocols.set(type, protocol);
     }
     // Instantiate post-processors dynamically based on registered factories
-    this.postProcessors = config.post_processing.map(ppConfig => {
-      const serializer = new ToolPostProcessorConfigSerializer();
-      return serializer.validateDict(ppConfig as any) as ToolPostProcessor;
-    });
+    this.postProcessors = config.post_processing.map(ppConfig =>
+      isToolPostProcessor(ppConfig)
+        ? ppConfig
+        : new ToolPostProcessorConfigSerializer().validateDict(ppConfig as any) as ToolPostProcessor
+    );
   }
 
   /**
