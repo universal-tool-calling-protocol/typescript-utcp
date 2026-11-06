@@ -423,7 +423,7 @@ interface CommandStep {
 
 1. **Use Placeholders**: Always use `UTCP_ARG_*_UTCP_END` placeholders instead of string concatenation.
 2. **Explicit Output Control**: Explicitly set `append_to_final_output` for clarity in multi-command workflows.
-3. **Error Handling**: Wrap tool calls in try-catch blocks for robust error handling.
+3. **Error Handling**: Wrap tool calls in try-catch blocks for robust error handling. A call rejects when a placeholder argument is missing, and on Unix (non-Windows) shells when the last command exits with a non-zero status.
 4. **Working Directory**: Specify `working_dir` when commands depend on specific file locations.
 5. **Platform-Specific Syntax**: Use appropriate command syntax for your target platform(s).
 6. **Tool Discovery**: Implement discovery commands that output valid UTCP manuals for dynamic tool registration.

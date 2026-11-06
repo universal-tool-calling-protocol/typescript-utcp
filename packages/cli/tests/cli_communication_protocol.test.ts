@@ -146,3 +146,68 @@ describe('CliCommunicationProtocol (Multi-Command)', () => {
     expect(path.normalize(result.trim())).toContain(path.normalize(tempDir));
   });
 });
+describe('CliCommunicationProtocol (failures)', () => {
+  const cliProtocol = new CliCommunicationProtocol();
+  const isWindows = process.platform === 'win32';
+  const template = (commands: { command: string; append_to_final_output?: boolean }[]) =>
+    CliCallTemplateSchema.parse({ name: 'failure_test', call_template_type: 'cli', commands });
+
+  test.skipIf(isWindows)('rejects when the last command exits with a non-zero status', async () => {
+    const callTemplate = template([{ command: 'echo "boom" >&2; exit 3' }]);
+    await expect(cliProtocol.callTool(mockClient, 'test.fail', {}, callTemplate)).rejects.toThrow(/exited with code 3: boom/);
+  });
+
+  test.skipIf(isWindows)('still returns the output when the last command succeeds after an earlier failure', async () => {
+    const callTemplate = template([
+      { command: 'false', append_to_final_output: false },
+      { command: 'echo "recovered"' },
+    ]);
+    expect(await cliProtocol.callTool(mockClient, 'test.recover', {}, callTemplate)).toBe('recovered');
+  });
+
+  test('rejects a call that leaves a placeholder argument out, without running the command', async () => {
+    const marker = path.join(await createTempDir('temp_missing_arg'), 'ran');
+    const callTemplate = template([{ command: `echo ran > ${JSON.stringify(marker)}; echo UTCP_ARG_sql_UTCP_END UTCP_ARG_db_UTCP_END` }]);
+    await expect(cliProtocol.callTool(mockClient, 'test.missing', { db: 'x' }, callTemplate)).rejects.toThrow(/missing argument\(s\): sql/);
+    expect(await fs.access(marker).then(() => true, () => false)).toBe(false);
+  });
+
+  test('accepts an empty string as a provided argument', async () => {
+    const callTemplate = template([{ command: 'echo "<UTCP_ARG_value_UTCP_END>"' }]);
+    expect(await cliProtocol.callTool(mockClient, 'test.empty', { value: '' }, callTemplate)).toBe('<>');
+  });
+});
+
+describe('CliCommunicationProtocol (failure details)', () => {
+  const cliProtocol = new CliCommunicationProtocol();
+  const isWindows = process.platform === 'win32';
+  const template = (commands: { command: string; append_to_final_output?: boolean }[]) =>
+    CliCallTemplateSchema.parse({ name: 'failure_detail_test', call_template_type: 'cli', commands });
+
+  test.skipIf(isWindows)('a failed discovery reports its exit code and output', async () => {
+    const result = await cliProtocol.registerManual(mockClient, template([{ command: 'echo "discovery broke" >&2; exit 4' }]));
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toMatch(/exited with code 4: discovery broke/);
+  });
+
+  test.skipIf(isWindows)('a failing last command reports its output even when it is not appended', async () => {
+    const callTemplate = template([
+      { command: 'echo "first"', append_to_final_output: true },
+      { command: 'echo "last broke"; exit 5', append_to_final_output: false },
+    ]);
+    await expect(cliProtocol.callTool(mockClient, 'test.last', {}, callTemplate)).rejects.toThrow(/exited with code 5:[\s\S]*last broke/);
+  });
+
+  test.skipIf(isWindows)('a succeeding last command that is not appended still returns only the appended output', async () => {
+    const callTemplate = template([
+      { command: 'echo "first"', append_to_final_output: true },
+      { command: 'echo "hidden"', append_to_final_output: false },
+    ]);
+    expect(await cliProtocol.callTool(mockClient, 'test.hidden', {}, callTemplate)).toBe('first');
+  });
+
+  test('a placeholder named like an inherited property is still required', async () => {
+    const callTemplate = template([{ command: 'echo UTCP_ARG_toString_UTCP_END' }]);
+    await expect(cliProtocol.callTool(mockClient, 'test.inherited', {}, callTemplate)).rejects.toThrow(/missing argument\(s\): toString/);
+  });
+});

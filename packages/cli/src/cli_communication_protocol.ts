@@ -532,8 +532,9 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
         // PowerShell - capture command output in variable
         scriptLines.push(`\$${varName} = ${substitutedCommand} 2>&1 | Out-String`);
       } else {
-        // Unix shell - capture command output in variable
+        // Unix shell - capture command output and its exit status
         scriptLines.push(`${varName}=$(${substitutedCommand} 2>&1)`);
+        scriptLines.push(`CMD_${i}_EXIT=$?`);
       }
     }
 
@@ -558,6 +559,16 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
           scriptLines.push(`echo "\${${varName}}"`);
         }
       }
+    }
+
+    if (!isWindows && commands.length > 0) {
+      const last = commands.length - 1;
+      if (commands[last]!.append_to_final_output === false) {
+        // A failing last step still explains itself even when its output is not appended.
+        scriptLines.push(`if [ "\${CMD_${last}_EXIT}" -ne 0 ]; then echo "\${CMD_${last}_OUTPUT}"; fi`);
+      }
+      // The trailing echos would otherwise make every script exit 0; report the last command's status.
+      scriptLines.push(`exit "\${CMD_${last}_EXIT}"`);
     }
 
     return { script: scriptLines.join('\n'), env: accumulatedEnv };
@@ -610,7 +621,19 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
         // manual, so a generous ceiling here is cheap.
       }, 60000);
 
-      // Get output based on exit code
+      // On Unix the script exits with the last command's status (see _build_combined_shell_script).
+      if (process.platform !== 'win32' && exitCode !== 0) {
+        const detail = (stdout.trim() || stderr.trim()) || 'no output';
+        const errorMsg = `Discovery commands for CLI provider '${manualCallTemplate.name}' exited with code ${exitCode}: ${detail}`;
+        this._log_error(errorMsg);
+        return {
+          success: false,
+          manualCallTemplate,
+          manual: new UtcpManualSerializer().validateDict({ tools: [] }),
+          errors: [errorMsg],
+        };
+      }
+
       const output = exitCode === 0 ? stdout : stderr;
 
       if (!output.trim()) {
@@ -693,6 +716,10 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
     }
 
     const cliCallTemplate = CliCallTemplateSchema.parse(toolCallTemplate);
+    const missingArgs = this._missing_args(cliCallTemplate.commands, toolArgs);
+    if (missingArgs.length > 0) {
+      throw new Error(`CLI tool '${toolName}' is missing argument(s): ${missingArgs.join(', ')}`);
+    }
     this._log_info(`Executing CLI tool '${toolName}' with ${cliCallTemplate.commands.length} command(s) in single subprocess`);
     
     try {
@@ -728,6 +755,10 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
         output = stdout.trim() ? stdout : stderr;
       }
       
+      if (!isWindows && exitCode !== 0) {
+        throw new Error(`CLI tool '${toolName}' exited with code ${exitCode}: ${output.trim()}`);
+      }
+
       if (!output.trim()) {
         this._log_info(`CLI tool '${toolName}' produced no output`);
         return '';
@@ -753,6 +784,14 @@ export class CliCommunicationProtocol implements CommunicationProtocol {
       this._log_error(`Error executing CLI tool '${toolName}': ${e.message || e}`);
       throw e;
     }
+  }
+
+  /**
+   * Names of the placeholders in the commands that have no value in the tool arguments.
+   */
+  private _missing_args(commands: { command: string }[], toolArgs: Record<string, any>): string[] {
+    const names = commands.flatMap((step) => [...step.command.matchAll(/UTCP_ARG_([a-zA-Z0-9_]+?)_UTCP_END/g)].map((m) => m[1]!));
+    return [...new Set(names)].filter((name) => !Object.prototype.hasOwnProperty.call(toolArgs, name));
   }
 
   /**
