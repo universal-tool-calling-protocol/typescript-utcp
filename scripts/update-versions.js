@@ -22,7 +22,7 @@ const PACKAGES_DIR = path.resolve(__dirname, '../packages');
 const ROOT_DIR = path.resolve(__dirname, '..');
 
 // Package directories
-const PACKAGES = ['core', 'http', 'mcp', 'text', 'file', 'cli', 'direct-call', 'dotenv-loader'];
+const PACKAGES = ['core', 'http', 'graphql', 'mcp', 'text', 'file', 'cli', 'direct-call', 'dotenv-loader'];
 
 /**
  * Parse semantic version string
