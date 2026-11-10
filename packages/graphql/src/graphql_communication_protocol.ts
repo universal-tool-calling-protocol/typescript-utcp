@@ -27,13 +27,13 @@ function ensureSecureUrl(url: string, context: string): void {
 }
 
 export class GraphQLCommunicationProtocol implements CommunicationProtocol {
-  private oauthTokens = new Map<string, string>();
+  private oauthTokens = new Map<string, { token: string; expiresAt: number }>();
 
   private async fetchOAuth2Token(auth: OAuth2Auth): Promise<string> {
     ensureSecureUrl(auth.token_url, 'OAuth2 token URL');
     const cacheKey = JSON.stringify([auth.token_url, auth.client_id, auth.client_secret, auth.scope ?? '']);
     const cached = this.oauthTokens.get(cacheKey);
-    if (cached) return cached;
+    if (cached && cached.expiresAt > Date.now()) return cached.token;
 
     const body: Record<string, string> = {
       grant_type: 'client_credentials',
@@ -47,10 +47,14 @@ export class GraphQLCommunicationProtocol implements CommunicationProtocol {
       body: new URLSearchParams(body).toString(),
       redirect: 'error',
     });
-    if (!response.ok) throw new Error(`OAuth2 token request failed: HTTP ${response.status}`);
-    const token = (await response.json()).access_token;
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`OAuth2 token request failed: HTTP ${response.status}`);
+    }
+    const { access_token: token, expires_in } = await response.json();
     if (!token) throw new Error('Access token not found in response.');
-    this.oauthTokens.set(cacheKey, token);
+    const expiresIn = typeof expires_in === 'number' ? expires_in : 3600;
+    this.oauthTokens.set(cacheKey, { token, expiresAt: Date.now() + expiresIn * 1000 });
     return token;
   }
 
@@ -67,7 +71,7 @@ export class GraphQLCommunicationProtocol implements CommunicationProtocol {
       headers['Authorization'] = `Bearer ${await this.fetchOAuth2Token(auth as OAuth2Auth)}`;
     }
     for (const field of template.header_fields ?? []) {
-      if (typeof toolArgs[field] === 'string') headers[field] = toolArgs[field];
+      if (field in toolArgs) headers[field] = String(toolArgs[field]);
     }
     return headers;
   }
@@ -84,7 +88,8 @@ export class GraphQLCommunicationProtocol implements CommunicationProtocol {
       throw new Error(`GraphQL errors: ${result.errors.map((e: any) => e.message).join('; ')}`);
     }
     if (!response.ok) throw new Error(`GraphQL request failed: HTTP ${response.status}`);
-    return result?.data;
+    if (result === null) throw new Error('GraphQL response is not JSON.');
+    return result.data;
   }
 
   async registerManual(caller: IUtcpClient, manualCallTemplate: CallTemplate): Promise<RegisterManualResult> {
@@ -140,7 +145,8 @@ export class GraphQLCommunicationProtocol implements CommunicationProtocol {
       const keys = Object.keys(variables);
       const varDefs = keys.length ? `(${keys.map(k => `$${k}: ${template.variable_types?.[k] ?? 'String'}`).join(', ')})` : '';
       const argPass = keys.length ? `(${keys.map(k => `${k}: $${k}`).join(', ')})` : '';
-      query = `${template.operation_type} ${varDefs} { ${fieldName}${argPass} }`;
+      const operation = [template.operation_type, template.operation_name].filter(Boolean).join(' ');
+      query = `${operation}${varDefs} { ${fieldName}${argPass} }`;
     }
 
     return this.execute(template.url, headers, {
