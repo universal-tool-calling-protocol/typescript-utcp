@@ -29,13 +29,13 @@ Install UTCP packages from npm:
 
 ```bash
 # Install core SDK and desired protocol plugins
-npm install @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file
+npm install @utcp/sdk @utcp/http @utcp/graphql @utcp/mcp @utcp/text @utcp/file
 
 # Optional: Add dotenv variable loader for Node.js
 npm install @utcp/dotenv-loader
 
 # Or using bun
-bun add @utcp/sdk @utcp/http @utcp/mcp @utcp/text @utcp/file
+bun add @utcp/sdk @utcp/http @utcp/graphql @utcp/mcp @utcp/text @utcp/file
 ```
 
 ### For Development

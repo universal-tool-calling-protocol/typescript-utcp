@@ -16,6 +16,8 @@
       "@utcp/sdk/*": ["packages/core/src/*"],
       "@utcp/http": ["packages/http/src"],
       "@utcp/http/*": ["packages/http/src/*"],
+      "@utcp/graphql": ["packages/graphql/src"],
+      "@utcp/graphql/*": ["packages/graphql/src/*"],
       "@utcp/mcp": ["packages/mcp/src"],
       "@utcp/mcp/*": ["packages/mcp/src/*"],
       "@utcp/text": ["packages/text/src"],
@@ -43,6 +45,7 @@
   "references": [
     { "path": "./packages/core" },
     { "path": "./packages/http" },
+    { "path": "./packages/graphql" },
     { "path": "./packages/mcp" },
     { "path": "./packages/text" },
     { "path": "./packages/cli" }

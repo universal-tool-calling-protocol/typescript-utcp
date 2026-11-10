@@ -18,9 +18,10 @@
   },
   "scripts": {
     "clean": "rm -rf packages/*/dist || rmdir /s /q packages\\*\\dist || true",
-    "build": "bun run build:core && bun run build:http && bun run build:mcp && bun run build:text && bun run build:file && bun run build:cli && bun run build:direct-call && bun run build:dotenv-loader",
+    "build": "bun run build:core && bun run build:http && bun run build:graphql && bun run build:mcp && bun run build:text && bun run build:file && bun run build:cli && bun run build:direct-call && bun run build:dotenv-loader",
     "build:core": "cd packages/core && bun run build",
     "build:http": "cd packages/http && bun run build",
+    "build:graphql": "cd packages/graphql && bun run build",
     "build:mcp": "cd packages/mcp && bun run build",
     "build:text": "cd packages/text && bun run build",
     "build:file": "cd packages/file && bun run build",
@@ -37,11 +38,12 @@
     "publish:text": "cd packages/text && npm publish",
     "publish:file": "cd packages/file && npm publish",
     "publish:http": "cd packages/http && npm publish",
+    "publish:graphql": "cd packages/graphql && npm publish",
     "publish:mcp": "cd packages/mcp && npm publish",
     "publish:cli": "cd packages/cli && npm publish",
     "publish:direct-call": "cd packages/direct-call && npm publish",
     "publish:dotenv-loader": "cd packages/dotenv-loader && npm publish",
-    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:file && bun run publish:http && bun run publish:mcp && bun run publish:cli && bun run publish:direct-call && bun run publish:dotenv-loader"
+    "publish:all": "bun run build && bun run publish:core && bun run publish:text && bun run publish:file && bun run publish:http && bun run publish:graphql && bun run publish:mcp && bun run publish:cli && bun run publish:direct-call && bun run publish:dotenv-loader"
   },
   "workspaces": [
     "packages/*"

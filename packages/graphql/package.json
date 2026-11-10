@@ -1,0 +1,54 @@
+{
+  "name": "@utcp/graphql",
+  "version": "1.0.0",
+  "description": "GraphQL utilities for UTCP",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "license": "MPL-2.0",
+  "author": "UTCP Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/universal-tool-calling-protocol/typescript-utcp.git",
+    "directory": "packages/graphql"
+  },
+  "keywords": [
+    "utcp",
+    "universal-tool-calling-protocol",
+    "tools",
+    "api",
+    "typescript",
+    "tool calling",
+    "graphql",
+    "agent",
+    "ai",
+    "llm"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@utcp/sdk": "^1.1.1",
+    "graphql": "^16.9.0"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.0.0",
+    "@types/bun": "latest"
+  }
+}
