@@ -199,6 +199,21 @@ export class UtcpClient implements IUtcpClient {
 
     const result = await protocol.registerManual(this, processedCallTemplate);
 
+    // The protocol needed the resolved values, but nothing kept or returned
+    // may hold them: what is stored is substituted again before every use, so
+    // a stored secret would be substituted twice (a value containing `$` then
+    // fails, or turns into another variable's value), and it would be handed
+    // to every caller of getTools()/getManualCallTemplate(). Protocols build
+    // tool templates out of the resolved manual (the OpenAPI converter copies
+    // its `auth_tools` and `headers`, MCP reuses the template itself), so the
+    // placeholders are put back into those too.
+    const placeholders = this._collectPlaceholders(manualCallTemplate, processedCallTemplate);
+    const storedCallTemplate = this._restorePlaceholders(processedCallTemplate, placeholders);
+    result.manualCallTemplate = storedCallTemplate;
+    for (const tool of result.manual?.tools ?? []) {
+      tool.tool_call_template = this._restorePlaceholders(tool.tool_call_template, placeholders);
+    }
+
     if (result.success) {
       // Determine allowed protocols: use explicit list if provided, otherwise default to manual's own protocol
       const allowedProtocols = (processedCallTemplate.allowed_communication_protocols?.length)
@@ -220,7 +235,7 @@ export class UtcpClient implements IUtcpClient {
       }
       result.manual.tools = filteredTools;
 
-      await this.config.tool_repository.saveManual(processedCallTemplate, result.manual);
+      await this.config.tool_repository.saveManual(storedCallTemplate, result.manual);
       console.log(`Successfully registered manual '${manualCallTemplate.name}' with ${result.manual.tools.length} tools.`);
     } else {
       console.error(`Error registering manual '${manualCallTemplate.name}': ${result.errors.join(', ')}`);
@@ -265,8 +280,20 @@ export class UtcpClient implements IUtcpClient {
 
     const protocol = this._registeredCommProtocols.get(manualCallTemplate.call_template_type);
     if (protocol) {
-      await protocol.deregisterManual(this, manualCallTemplate);
-      console.log(`Deregistered communication protocol for manual '${manualName}'.`);
+      // The repository keeps the template with its placeholders; the protocol
+      // gets it resolved, as it did on registration (MCP finds the session to
+      // release by the resolved config and auth). A variable that can no
+      // longer be resolved must not keep the manual registered forever.
+      let processedCallTemplate: CallTemplate | null = null;
+      try {
+        processedCallTemplate = await this.substituteCallTemplateVariables(manualCallTemplate, manualName);
+      } catch (error: any) {
+        console.warn(`Could not resolve the variables of manual '${manualName}' for its protocol's cleanup; removing it from the repository anyway: ${error.message}`);
+      }
+      if (processedCallTemplate) {
+        await protocol.deregisterManual(this, processedCallTemplate);
+        console.log(`Deregistered communication protocol for manual '${manualName}'.`);
+      }
     } else {
       console.warn(`No communication protocol found for type '${manualCallTemplate.call_template_type}' of manual '${manualName}'.`);
     }
@@ -438,6 +465,58 @@ export class UtcpClient implements IUtcpClient {
     }
 
     return result.data as T;
+  }
+
+  /**
+   * Maps every string that substitution changed back to the string it came
+   * from, by walking the template as written alongside its resolved copy
+   * (substitution only ever rewrites string leaves, so the two share a shape).
+   * Empty results are left out: an empty string says nothing about where it
+   * came from and is not worth hiding.
+   */
+  private _collectPlaceholders(raw: unknown, processed: unknown, found: Map<string, string> = new Map()): Map<string, string> {
+    if (typeof raw === 'string') {
+      if (typeof processed === 'string' && processed !== raw && processed !== '' && !found.has(processed)) {
+        found.set(processed, raw);
+      }
+    } else if (Array.isArray(raw)) {
+      if (Array.isArray(processed)) {
+        raw.forEach((item, i) => this._collectPlaceholders(item, processed[i], found));
+      }
+    } else if (raw !== null && typeof raw === 'object' && processed !== null && typeof processed === 'object') {
+      for (const [key, value] of Object.entries(raw)) {
+        this._collectPlaceholders(value, (processed as Record<string, unknown>)[key], found);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Returns a copy of `value` in which every string equal to a resolved value
+   * from `placeholders` is replaced by the placeholder it was resolved from.
+   * Only plain objects and arrays are copied; anything else is kept as is.
+   */
+  private _restorePlaceholders<T>(value: T, placeholders: Map<string, string>): T {
+    if (placeholders.size === 0) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      return (placeholders.get(value) ?? value) as T;
+    }
+    if (Array.isArray(value)) {
+      return value.map(item => this._restorePlaceholders(item, placeholders)) as T;
+    }
+    if (value !== null && typeof value === 'object') {
+      const proto = Object.getPrototypeOf(value);
+      if (proto === Object.prototype || proto === null) {
+        const copy: Record<string, unknown> = {};
+        for (const [key, item] of Object.entries(value)) {
+          copy[key] = this._restorePlaceholders(item, placeholders);
+        }
+        return copy as T;
+      }
+    }
+    return value;
   }
 
   /**

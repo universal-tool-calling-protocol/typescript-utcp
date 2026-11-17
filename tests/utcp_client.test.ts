@@ -926,3 +926,162 @@ describe("UtcpClient closes every owned protocol even when one of them fails to 
     expect(slow.closed).toBe(1);
   });
 });
+
+describe("manual variables are substituted once, at use, and never stored resolved", () => {
+  let originalProtocols: { [type: string]: CommunicationProtocol };
+  let originalFactories: { [type: string]: () => CommunicationProtocol };
+
+  beforeAll(() => {
+    originalProtocols = { ...CommunicationProtocol.communicationProtocols };
+    originalFactories = { ...CommunicationProtocol.communicationProtocolFactories };
+  });
+
+  const envFiles: string[] = [];
+
+  afterEach(async () => {
+    CommunicationProtocol.communicationProtocols = { ...originalProtocols };
+    CommunicationProtocol.communicationProtocolFactories = { ...originalFactories };
+    await Promise.all(envFiles.splice(0).map(file => unlink(file).catch(() => {})));
+  });
+
+  // Fake secrets only. The first one contains `$` sequences that look like
+  // variable references (`$$w0rd`, `$HOME`) if the value is substituted again.
+  const DOLLAR_SECRET = "p@$$w0rd-$HOME-fake";
+  const PLAIN_SECRET = "fake-token-123";
+
+  /**
+   * Builds its tools the way the real protocols do: the OpenAPI converter
+   * copies the manual's resolved `auth` into every tool it generates, and the
+   * MCP protocol hands every tool the resolved manual template itself. Records
+   * every template it is given, so a test can check what reached the protocol.
+   */
+  class RecordingProtocol extends CommunicationProtocol {
+    registered: CallTemplate[] = [];
+    deregistered: CallTemplate[] = [];
+    called: CallTemplate[] = [];
+
+    async registerManual(caller: IUtcpClient, manualCallTemplate: CallTemplate): Promise<RegisterManualResult> {
+      this.registered.push(manualCallTemplate);
+      const http = manualCallTemplate as HttpCallTemplate;
+      const tool = (name: string, tool_call_template: CallTemplate): Tool => ({
+        name,
+        description: "",
+        inputs: { type: "object", properties: {} },
+        outputs: { type: "object", properties: {} },
+        tags: [],
+        tool_call_template,
+      });
+      return {
+        manualCallTemplate,
+        manual: {
+          utcp_version: "1.0",
+          manual_version: "1.0",
+          tools: [
+            tool("copied_auth", {
+              name: http.name,
+              call_template_type: "http",
+              http_method: "GET",
+              url: "https://api.example.com/ping",
+              auth: http.auth,
+            } as HttpCallTemplate),
+            tool("shared_template", manualCallTemplate),
+          ],
+        },
+        success: true,
+        errors: [],
+      };
+    }
+
+    async deregisterManual(caller: IUtcpClient, manualCallTemplate: CallTemplate): Promise<void> {
+      this.deregistered.push(manualCallTemplate);
+    }
+
+    async callTool(caller: IUtcpClient, toolName: string, toolArgs: Record<string, any>, toolCallTemplate: CallTemplate): Promise<any> {
+      this.called.push(toolCallTemplate);
+      return "ok";
+    }
+
+    async *callToolStreaming(caller: IUtcpClient, toolName: string, toolArgs: Record<string, any>, toolCallTemplate: CallTemplate): AsyncGenerator<any, void, unknown> {
+      this.called.push(toolCallTemplate);
+      yield "ok";
+    }
+  }
+
+  const svcTemplate = (): HttpCallTemplate =>
+    ({
+      name: "svc",
+      call_template_type: "http",
+      http_method: "GET",
+      url: "https://api.example.com/manual",
+      auth: { auth_type: "api_key", api_key: "Bearer ${TOKEN}", var_name: "Authorization", location: "header" },
+    }) as unknown as HttpCallTemplate;
+
+  const setUp = async (secret: string) => {
+    const protocol = new RecordingProtocol();
+    CommunicationProtocol.communicationProtocols["http"] = protocol;
+    // `svc_TOKEN`: the variable `TOKEN` namespaced by the manual name `svc`.
+    // Served by a variable loader, as a secrets file would be: the loader's
+    // values are used verbatim (inline `config.variables` are themselves
+    // substituted by `create()`, so a `$` there means something else).
+    const envFile = path.join(import.meta.dir, `.env.substitution.${crypto.randomUUID()}`);
+    await writeFile(envFile, `svc_TOKEN='${secret}'\n`);
+    envFiles.push(envFile);
+    const client = await UtcpClient.create(process.cwd(), {
+      load_variables_from: [{ variable_loader_type: "dotenv", env_file_path: envFile }],
+    } as any);
+    const result = await client.registerManual(svcTemplate());
+    expect(result.success).toBe(true);
+    return { client, protocol, result };
+  };
+
+  const apiKeyOf = (template: CallTemplate) => (template as HttpCallTemplate).auth && ((template as HttpCallTemplate).auth as any).api_key;
+
+  test("a secret containing `$` reaches the protocol intact on register, call, stream and deregister", async () => {
+    const { client, protocol } = await setUp(DOLLAR_SECRET);
+    const expected = `Bearer ${DOLLAR_SECRET}`;
+    expect(apiKeyOf(protocol.registered[0])).toBe(expected);
+
+    // Before the fix the stored, already-resolved template was substituted a
+    // second time here and failed with "Variable 'svc_w0rd' ... not found".
+    expect(await client.callTool("svc.copied_auth", {})).toBe("ok");
+    expect(await client.callTool("svc.shared_template", {})).toBe("ok");
+    const chunks: any[] = [];
+    for await (const chunk of client.callToolStreaming("svc.copied_auth", {})) chunks.push(chunk);
+    expect(chunks).toEqual(["ok"]);
+    expect(protocol.called.map(apiKeyOf)).toEqual([expected, expected, expected]);
+
+    expect(await client.deregisterManual("svc")).toBe(true);
+    expect(apiKeyOf(protocol.deregistered[0])).toBe(expected);
+    await client.close();
+  });
+
+  test("the repository and the register result keep the placeholder, not the resolved secret", async () => {
+    const { client, protocol, result } = await setUp(PLAIN_SECRET);
+    // The protocol did get the resolved value...
+    expect(apiKeyOf(protocol.registered[0])).toBe(`Bearer ${PLAIN_SECRET}`);
+
+    // ...but nothing the client hands back, or keeps, contains it.
+    const exposed = {
+      result,
+      manualCallTemplate: await client.config.tool_repository.getManualCallTemplate("svc"),
+      manualCallTemplates: await client.config.tool_repository.getManualCallTemplates(),
+      manuals: await client.config.tool_repository.getManuals(),
+      tools: await client.getTools(),
+      tool: await client.getTool("svc.copied_auth"),
+    };
+    expect(JSON.stringify(exposed)).not.toContain(PLAIN_SECRET);
+    expect(apiKeyOf(exposed.manualCallTemplate!)).toBe("Bearer ${TOKEN}");
+    expect(exposed.tools.map(t => apiKeyOf(t.tool_call_template))).toEqual(["Bearer ${TOKEN}", "Bearer ${TOKEN}"]);
+    // A placeholder that is still there is one callers can discover.
+    expect(await client.getRequiredVariablesForRegisteredTool("svc.copied_auth")).toEqual(["svc_TOKEN"]);
+    await client.close();
+  });
+
+  test("a variable changed after registration is the one the next call uses", async () => {
+    const { client, protocol } = await setUp(PLAIN_SECRET);
+    client.config.variables!["svc_TOKEN"] = "fake-rotated-token";
+    await client.callTool("svc.copied_auth", {});
+    expect(apiKeyOf(protocol.called[0])).toBe("Bearer fake-rotated-token");
+    await client.close();
+  });
+});
